@@ -127,5 +127,14 @@ export default {
     signedUrlTtlSeconds: process.env.AZURE_SIGNED_URL_TTL_SECONDS ? Number(process.env.AZURE_SIGNED_URL_TTL_SECONDS) : 3600,
     uploadConcurrency: process.env.AZURE_UPLOAD_CONCURRENCY ? Number(process.env.AZURE_UPLOAD_CONCURRENCY) : 4,
   },
+  // Local filesystem storage (when UPLOADER_TYPE=local)
+  localStorage: {
+    // Root directory where recordings are written. REQUIRED when UPLOADER_TYPE=local
+    // (no default — validateConfig() throws if missing).
+    baseDir: process.env.LOCAL_STORAGE_DIR,
+    // Optional public base URL to build the notification blobUrl (e.g. nginx serving the volume).
+    // When absent, blobUrl is a file:// absolute path.
+    publicBaseUrl: process.env.LOCAL_STORAGE_PUBLIC_BASE_URL || undefined,
+  },
   uploaderType: process.env.UPLOADER_TYPE ? (process.env.UPLOADER_TYPE as UploaderType) : 's3' as UploaderType,
 };
