@@ -704,6 +704,23 @@ class DiskUploader implements IUploader {
               blobPrefix: config.azureBlobStorage.blobPrefix,
               duration: this.recordingDuration,
             };
+          } else if (provider.name === 'local') {
+            let url: string | undefined;
+            if (typeof (provider as any).getSignedUrl === 'function') {
+              try {
+                url = await (provider as any).getSignedUrl(key);
+              } catch (e) {
+                this._logger.error('Failed to build local storage URL. Notification payload will not include a URL.', e as any);
+              }
+            }
+            this.lastUploadedBlobUrl = url;
+            this.lastStorageDetails = {
+              provider: 'local',
+              baseDir: config.localStorage.baseDir,
+              key,
+              url: this.lastUploadedBlobUrl,
+              duration: this.recordingDuration,
+            };
           }
         } catch (metaErr) {
           this._logger.warn('Unable to compute storage metadata/url for notification', metaErr as any);
@@ -782,8 +799,8 @@ class DiskUploader implements IUploader {
       // Upload recording to configured storage
       if (config.uploaderType === 'screenapp') {
         uploadResult = await this.uploadRecordingToScreenApp();
-      } else if (config.uploaderType === 's3') {
-        // Route to selected object storage provider (S3 or Azure) based on configuration
+      } else if (config.uploaderType === 's3' || config.uploaderType === 'local') {
+        // Route to selected storage provider (S3, Azure, or local filesystem) based on configuration
         uploadResult = await this.uploadRecordingToObjectStorage();
       } else {
         throw new Error(`Unsupported UPLOADER_TYPE configuration: ${config.uploaderType}`);

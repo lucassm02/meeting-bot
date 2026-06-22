@@ -634,11 +634,11 @@ export class MicrosoftTeamsBot extends MeetBotBase {
             }
 
             const alonePhrases = [
-              "you're the only one here",
-              "you’re the only one here",
+              'you\'re the only one here',
+              'you’re the only one here',
               'you are the only one here',
-              "you're the only one in this meeting",
-              "you’re the only one in this meeting",
+              'you\'re the only one in this meeting',
+              'you’re the only one in this meeting',
               'you are the only one in this meeting',
               'only one in this meeting',
               'only you are here',
