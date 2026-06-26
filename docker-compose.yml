@@ -40,6 +40,8 @@ services:
       - GOOGLE_CHROME_CDP_URL=${GOOGLE_CHROME_CDP_URL-http://chrome-cdp:9223}
     ports:
       - "3000:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - .:/usr/src/app
       - ./.chrome:/usr/src/app/.chrome
