@@ -21,6 +21,29 @@ fi
 Xvfb "$DISPLAY" -screen 0 "${XVFB_SCREEN_SIZE}x24" -ac +extension RANDR >/tmp/xvfb.log 2>&1 &
 xvfb_pid="$!"
 
+wait_for_xvfb() {
+  local display_number="${DISPLAY#:}"
+  local socket="/tmp/.X11-unix/X${display_number}"
+
+  for _ in $(seq 1 100); do
+    if [ -S "$socket" ]; then
+      return 0
+    fi
+    if ! kill -0 "$xvfb_pid" >/dev/null 2>&1; then
+      echo "Xvfb exited before creating display ${DISPLAY}" >&2
+      cat /tmp/xvfb.log >&2 || true
+      return 1
+    fi
+    sleep 0.1
+  done
+
+  echo "Xvfb did not become ready on display ${DISPLAY}" >&2
+  cat /tmp/xvfb.log >&2 || true
+  return 1
+}
+
+wait_for_xvfb
+
 cat >/tmp/chrome-cdp-nginx.conf <<EOF
 pid /tmp/nginx.pid;
 error_log /dev/stderr warn;
@@ -84,6 +107,7 @@ google-chrome-stable \
   --no-first-run \
   --no-default-browser-check \
   --disable-dev-shm-usage \
+  --disable-gpu \
   --disable-background-timer-throttling \
   --disable-backgrounding-occluded-windows \
   --disable-renderer-backgrounding \
@@ -91,4 +115,4 @@ google-chrome-stable \
   "$CHROME_URL" &
 chrome_pid="$!"
 
-wait -n "$nginx_pid" "$chrome_pid"
+wait -n "$xvfb_pid" "$nginx_pid" "$chrome_pid"
