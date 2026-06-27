@@ -59,7 +59,7 @@ function signPayload(body: string, secret?: string): string | undefined {
   return crypto.createHmac('sha256', secret).update(body).digest('hex');
 }
 
-async function sendWebhook(payload: RecordingCompletedPayload, logger: Logger) {
+async function sendWebhook(payload: RedisNotificationPayload, logger: Logger) {
   if (!config.notifyWebhookEnabled) return;
   if (!config.notifyWebhookUrl) {
     logger.warn('Webhook enabled but NOTIFY_WEBHOOK_URL is not set. Skipping.');
@@ -77,9 +77,9 @@ async function sendWebhook(payload: RecordingCompletedPayload, logger: Logger) {
       },
       timeout: 10000,
     });
-    logger.info('Recording completed webhook delivered.');
+    logger.info(`${payload.status === 'failed' ? 'Meeting failed' : 'Recording completed'} webhook delivered.`);
   } catch (err) {
-    logger.error('Failed to deliver recording webhook', err as any);
+    logger.error('Failed to deliver meeting webhook', err as any);
   }
 }
 
@@ -171,5 +171,8 @@ export function createMeetingFailedPayload(context: MeetingFailureContext, error
 }
 
 export async function notifyMeetingFailed(payload: MeetingFailedPayload, logger: Logger) {
-  await rpushToRedisList(payload, logger, config.notifyRedisFailureList, 'Meeting failed');
+  await Promise.allSettled([
+    sendWebhook(payload, logger),
+    rpushToRedisList(payload, logger, config.notifyRedisFailureList, 'Meeting failed'),
+  ]);
 }
