@@ -16,6 +16,13 @@ export const patchBotStatus = async ({
     provider: 'google' | 'microsoft' | 'zoom',
     status: BotStatus[],
 }, logger: Logger) => {
+  if (!config.botStatusPatchEnabled) {
+    logger.info('Bot status patch disabled. Skipping external status update.', {
+      requestData: { eventId, botId, provider, status },
+    });
+    return true;
+  }
+
   try {
     const apiV2 = createApiV2(token, config.serviceKey);
     const response = await apiV2.patch<
@@ -59,6 +66,13 @@ export const addBotLog = async ({
     category: LogCategory,
     subCategory: LogSubCategory<LogCategory>,
 }, logger: Logger) => {
+  if (!config.botStatusPatchEnabled) {
+    logger.info('Bot status patch disabled. Skipping external bot log update.', {
+      requestData: { eventId, botId, provider, level, message, category, subCategory },
+    });
+    return true;
+  }
+
   try {
     const apiV2 = createApiV2(token, config.serviceKey);
     const response = await apiV2.patch<

@@ -62,6 +62,7 @@ export default {
     user: process,
   },
   authBaseUrlV2: process.env.AUTH_BASE_URL_V2 ?? 'http://localhost:8081/v2',
+  botStatusPatchEnabled: process.env.BOT_STATUS_PATCH_ENABLED !== 'false',
   // Unset MAX_RECORDING_DURATION_MINUTES to use default upper limit on duration
   maxRecordingDuration: process.env.MAX_RECORDING_DURATION_MINUTES ?
     Number(process.env.MAX_RECORDING_DURATION_MINUTES) :
