@@ -18,7 +18,7 @@ export class LocalStorageProvider implements StorageProvider {
    * Resolve a storage key to an absolute path inside baseDir and guarantee it
    * stays contained. The key embeds request-controlled values (userId, namePrefix),
    * so this prevents path traversal (e.g. userId="../../etc/...") from writing
-   * outside baseDir. See spec 001 risk R4.
+   * outside baseDir.
    */
   private resolveSafePath(baseDir: string, key: string): string {
     const dest = path.resolve(baseDir, key);
@@ -53,7 +53,7 @@ export class LocalStorageProvider implements StorageProvider {
       await fs.mkdir(path.dirname(dest), { recursive: true });
 
       // Copy (not move): the caller deletes the temp file after upload and may retry,
-      // so the source must remain intact. See spec 001 risk R2.
+      // so the source must remain intact.
       await fs.copyFile(options.filePath, dest);
 
       // Write a sidecar metadata file for parity with object-storage metadata.

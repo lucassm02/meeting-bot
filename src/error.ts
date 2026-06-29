@@ -39,6 +39,12 @@ export class RecordingUploadFailedError extends KnownError {
   }
 }
 
+export class TeamsCaptchaError extends KnownError {
+  constructor(message: string) {
+    super(message, false, 0);
+  }
+}
+
 export class UnsupportedMeetingError extends KnownError {
   public googleMeetPageStatus: 'SIGN_IN_PAGE' | 'GOOGLE_MEET_PAGE' | 'UNSUPPORTED_PAGE' | null;
 

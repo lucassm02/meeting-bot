@@ -154,7 +154,6 @@ async function createBrowserContext(url: string, correlationId: string, botType:
     '--allow-http-screen-capture',
     '--no-sandbox',
     '--disable-setuid-sandbox',
-    '--disable-web-security',
     '--use-gl=angle',
     '--use-angle=swiftshader',
     `--window-size=${browserWindowSize.width},${browserWindowSize.height}`,
@@ -299,9 +298,12 @@ async function createBrowserContext(url: string, correlationId: string, botType:
     } : {}),
   });
 
-  // Grant permissions so Teams will play audio (Teams requires this unlike Google Meet)
+  // Grant mic/camera scoped to the meeting's origin (scheme+host), not the full
+  // URL — Playwright's `origin` expects an origin, and this also covers same-origin
+  // redirects (e.g. Teams' join URL → /light-meetings/launch). Derived from `url`
+  // so each platform (Teams, Zoom) gets its own correct origin.
   if (botType !== 'google') {
-    await context.grantPermissions(['microphone', 'camera'], { origin: url });
+    await context.grantPermissions(['microphone', 'camera'], { origin: new URL(url).origin });
   }
 
   const page = await context.newPage();

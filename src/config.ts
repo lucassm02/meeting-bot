@@ -83,6 +83,31 @@ export default {
   retryCount: process.env.RETRY_COUNT ? Number(process.env.RETRY_COUNT) : 2,
   teamsPrewarmEnabled: process.env.TEAMS_PREWARM_ENABLED === 'true',
   teamsAudioStabilizationMs: process.env.TEAMS_AUDIO_STABILIZATION_MS ? Number(process.env.TEAMS_AUDIO_STABILIZATION_MS) : 1000,
+  // Automatic resolution of the Teams anonymous-join CAPTCHA (Microsoft HIP image-text challenge).
+  // Disabled by default — when off, the bot keeps the previous "detect and abort" behaviour.
+  teamsCaptchaSolverEnabled: process.env.TEAMS_CAPTCHA_SOLVER_ENABLED === 'true',
+  // API key of a 2Captcha-compatible image solving service (2Captcha, CapMonster, etc.)
+  teamsCaptchaSolverApiKey: process.env.TEAMS_CAPTCHA_SOLVER_API_KEY,
+  // Base URL of the 2Captcha-compatible endpoint (override for self-hosted/compatible providers)
+  teamsCaptchaSolverBaseUrl: process.env.TEAMS_CAPTCHA_SOLVER_BASE_URL || 'https://2captcha.com',
+  // How many solve attempts before failing with TeamsCaptchaError (each retry refreshes the challenge)
+  teamsCaptchaMaxRetries: process.env.TEAMS_CAPTCHA_MAX_RETRIES ? Number(process.env.TEAMS_CAPTCHA_MAX_RETRIES) : 3,
+  // Upper bound for a single solve (submit + polling the provider for the answer)
+  teamsCaptchaSolverTimeoutMs: process.env.TEAMS_CAPTCHA_SOLVER_TIMEOUT_MS ? Number(process.env.TEAMS_CAPTCHA_SOLVER_TIMEOUT_MS) : 120000,
+  // Solver provider: '2captcha' (external image-solving service) or 'openai'
+  // (delegates to the orchestrator, which owns the OpenAI key). Defaults to
+  // '2captcha' to preserve the previous behaviour.
+  teamsCaptchaSolverProvider: process.env.TEAMS_CAPTCHA_SOLVER_PROVIDER || '2captcha',
+  // Base URL of the orchestrator's internal CAPTCHA endpoints. Derived from the
+  // callback URL the orchestrator already injects (NOTIFY_WEBHOOK_URL minus the
+  // /bot-callback suffix) unless explicitly overridden. Used by the 'openai' provider.
+  orchestratorInternalUrl: process.env.ORCHESTRATOR_INTERNAL_URL
+    || (process.env.NOTIFY_WEBHOOK_URL ? process.env.NOTIFY_WEBHOOK_URL.replace(/\/bot-callback\/?$/, '') : undefined),
+  // When the image CAPTCHA is exhausted, fall back to the audio challenge.
+  // Lower success rate (adversarial audio); off by default.
+  teamsCaptchaAudioFallbackEnabled: process.env.TEAMS_CAPTCHA_AUDIO_FALLBACK_ENABLED === 'true',
+  // Seconds of the audio challenge to capture from the PulseAudio monitor.
+  teamsCaptchaAudioCaptureSeconds: process.env.TEAMS_CAPTCHA_AUDIO_CAPTURE_SECONDS ? Number(process.env.TEAMS_CAPTCHA_AUDIO_CAPTURE_SECONDS) : 8,
   miscStorageBucket: process.env.GCP_MISC_BUCKET,
   miscStorageFolder: process.env.GCP_MISC_BUCKET_FOLDER ? process.env.GCP_MISC_BUCKET_FOLDER : 'meeting-bot',
   region: process.env.GCP_DEFAULT_REGION,

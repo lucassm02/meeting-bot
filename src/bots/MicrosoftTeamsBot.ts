@@ -2,7 +2,7 @@ import { Page } from 'playwright';
 import { JoinParams } from './AbstractMeetBot';
 import { BotStatus } from '../types';
 import config from '../config';
-import { RecordingUploadFailedError, WaitingAtLobbyRetryError } from '../error';
+import { RecordingUploadFailedError, TeamsCaptchaError, WaitingAtLobbyRetryError } from '../error';
 import { handleWaitingAtLobbyError, MeetBotBase } from './MeetBotBase';
 import { v4 } from 'uuid';
 import { patchBotStatus } from '../services/botService';
@@ -11,6 +11,8 @@ import { Logger } from 'winston';
 import { retryActionWithWait } from '../util/resilience';
 import { uploadDebugImage } from '../services/bugService';
 import createBrowserContext from '../lib/chromium';
+import { getCaptchaSolver } from '../lib/captchaSolver';
+import { captureSystemAudioClip } from '../lib/audioCapture';
 import { browserLogCaptureCallback } from '../util/logger';
 import { MICROSOFT_REQUEST_DENIED } from '../constants';
 import { FFmpegRecorder } from '../lib/ffmpegRecorder';
@@ -97,11 +99,29 @@ export class MicrosoftTeamsBot extends MeetBotBase {
 
   private async joinMeeting({ url, name, teamId, userId, eventId, botId, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
     const joinButtonSelectors = [
+      // Locale-independent: the launcher page links directly to light-meetings
+      'a[href*="light-meetings"]',
+      // English aria-labels
       'button[aria-label="Join meeting from this browser"]',
       'button[aria-label="Continue on this browser"]',
       'button[aria-label="Join on this browser"]',
+      // English text
       'button:has-text("Continue on this browser")',
+      'button:has-text("Continue in this browser")',
       'button:has-text("Join from browser")',
+      // Portuguese (pt-BR)
+      'button:has-text("Continuar neste navegador")',
+      'button:has-text("Continuar no navegador")',
+      // Spanish
+      'button:has-text("Continuar en este explorador")',
+      'button:has-text("Continuar en el explorador")',
+      // French
+      'button:has-text("Continuer dans ce navigateur")',
+      // German
+      'button:has-text("In diesem Browser fortfahren")',
+      'button:has-text("Im Browser fortfahren")',
+      // Italian
+      'button:has-text("Continua nel browser")',
     ];
 
     const clickFirstVisibleSelector = async (page: Page, selectors: string[], timeoutMs: number, logPrefix: string): Promise<boolean> => {
@@ -169,7 +189,8 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     const buttonClicked = await clickFirstVisibleSelector(this.page, joinButtonSelectors, 60000, 'Join from browser');
 
     if (!buttonClicked) {
-      this._logger.info('Join from browser button not found, proceeding anyway...');
+      this._logger.warn('Join from browser button not found after 60s; capturing debug screenshot and proceeding...');
+      await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'launcher-button-not-found', userId, this._logger, botId);
     }
 
     this._logger.info('Waiting for pre-join screen to load...');
@@ -178,8 +199,17 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     try {
       this._logger.info('Looking for name input field...');
 
-      // Use the specific Teams pre-join name input selector
-      const nameInput = this.page.locator('input[data-tid="prejoin-display-name-input"]');
+      // Try multiple selectors: old Teams web uses data-tid; new light-meetings UI uses placeholders
+      const nameInputSelectors = [
+        'input[data-tid="prejoin-display-name-input"]',
+        'input[placeholder*="nome" i]',
+        'input[placeholder*="name" i]',
+        'input[placeholder*="nombre" i]',
+        'input[placeholder*="nom" i]',
+        'input[aria-label*="nome" i]',
+        'input[aria-label*="name" i]',
+      ].join(', ');
+      const nameInput = this.page.locator(nameInputSelectors).first();
 
       // Wait for the field to be visible
       await nameInput.waitFor({ state: 'visible', timeout: 45000 });
@@ -257,12 +287,25 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     await retryActionWithWait(
       'Clicking the join button',
       async () => {
-        // Try different possible button texts
+        // Try different possible button texts (locale variants)
         const possibleTexts = [
           'Join now',
           'Join',
           'Ask to join',
           'Join meeting',
+          // Portuguese (pt-BR) — light-meetings UI
+          'Ingressar agora',
+          'Ingressar',
+          'Solicitar para ingressar',
+          // Spanish
+          'Unirse ahora',
+          'Unirse',
+          // French
+          'Rejoindre maintenant',
+          'Rejoindre',
+          // German
+          'Jetzt teilnehmen',
+          'Teilnehmen',
         ];
 
         let buttonClicked = false;
@@ -293,10 +336,24 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       }
     );
 
+    // Teams shows a Microsoft HIP (image-text) CAPTCHA for anonymous
+    // guests on tenants whose policy requires verification. Detect it and try to
+    // solve via the configured solver before giving up.
+    await this.page.waitForTimeout(2000);
+    if (await this.isCaptchaVisible()) {
+      this._logger.warn('CAPTCHA detected on Teams join (tenant anonymous-join policy)', { botId, userId });
+      const solved = await this.solveCaptchaWithRetries(userId, botId);
+      if (!solved) {
+        await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'captcha-detected', userId, this._logger, botId);
+        throw new TeamsCaptchaError(`Microsoft Teams CAPTCHA could not be solved after ${config.teamsCaptchaMaxRetries} attempt(s). Tenant policy requires guest verification; consider an authenticated session.`);
+      }
+      this._logger.info('CAPTCHA solved successfully; continuing to join', { botId, userId });
+    }
+
     // Do this to ensure meeting bot has joined the meeting
     try {
       const wanderingTime = config.joinWaitTime * 60 * 1000; // Give some time to be let in
-      const callButton = this.page.getByRole('button', { name: /Leave/i });
+      const callButton = this.page.getByRole('button', { name: /Leave|Sair|Salir|Quitter|Verlassen/i });
       await callButton.waitFor({ timeout: wanderingTime });
       this._logger.info('Bot is entering the meeting...');
     } catch (error) {
@@ -362,6 +419,188 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     await this.recordMeetingPageWithFFmpeg({ teamId, userId, eventId, botId, uploader });
 
     pushState('finished');
+  }
+
+  // The verification dialog is identified by its character-entry input,
+  // which is locale-stable across the placeholders Teams ships (pt-BR/en).
+  private async isCaptchaVisible(): Promise<boolean> {
+    const captchaLocator = this.page.locator([
+      'input[placeholder*="caracteres" i]',
+      'input[placeholder*="characters" i]',
+      '[data-tid="captcha-dialog"]',
+    ].join(', ')).first();
+    return captchaLocator.isVisible({ timeout: 1000 }).catch(() => false);
+  }
+
+  // Solve the HIP CAPTCHA, refreshing the challenge between attempts.
+  // Returns true once the dialog clears, false when attempts are exhausted.
+  private async solveCaptchaWithRetries(userId: string, botId?: string): Promise<boolean> {
+    const solver = getCaptchaSolver(this._logger);
+    if (!solver) {
+      this._logger.warn('CAPTCHA solver disabled or unconfigured; cannot solve challenge', { botId, userId });
+      return false;
+    }
+
+    const maxRetries = config.teamsCaptchaMaxRetries;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const imageBase64 = await this.captureCaptchaImage();
+        if (!imageBase64) {
+          this._logger.warn('Could not capture CAPTCHA image element', { attempt, botId, userId });
+        } else {
+          const answer = await solver.solveImage(imageBase64);
+          this._logger.info('CAPTCHA solver returned an answer', { attempt, answerLength: answer.length, botId, userId });
+          await this.submitCaptchaAnswer(answer);
+        }
+      } catch (err) {
+        this._logger.warn('CAPTCHA solve attempt failed', { attempt, error: err instanceof Error ? err.message : String(err), botId, userId });
+      }
+
+      // Give the page a moment to validate the answer, then check if it cleared.
+      await this.page.waitForTimeout(1500);
+      if (!(await this.isCaptchaVisible())) {
+        this._logger.info('CAPTCHA dialog cleared after solve', { attempt, botId, userId });
+        return true;
+      }
+
+      if (attempt < maxRetries) {
+        this._logger.info('CAPTCHA still present; refreshing challenge for next attempt', { attempt, botId, userId });
+        await this.refreshCaptcha();
+      }
+    }
+
+    // Image attempts exhausted — try the audio challenge as a last resort.
+    if (config.teamsCaptchaAudioFallbackEnabled && typeof solver.solveAudio === 'function') {
+      this._logger.info('Image CAPTCHA exhausted; attempting audio fallback', { botId, userId });
+      if (await this.solveCaptchaViaAudio(solver.solveAudio.bind(solver), userId, botId)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // Audio fallback. Switches the dialog to the audio challenge, records
+  // a short clip from the system audio, transcribes it via the solver and submits.
+  private async solveCaptchaViaAudio(
+    solveAudio: (audioBase64: string, mimeType: string) => Promise<string>,
+    userId: string,
+    botId?: string,
+  ): Promise<boolean> {
+    if (!(await this.switchToAudioCaptcha())) {
+      this._logger.warn('Could not switch to audio CAPTCHA', { botId, userId });
+      return false;
+    }
+
+    const maxRetries = config.teamsCaptchaMaxRetries;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.playCaptchaAudio();
+        const clip = await captureSystemAudioClip(config.teamsCaptchaAudioCaptureSeconds, this._logger);
+        if (!clip) {
+          this._logger.warn('Could not capture CAPTCHA audio clip', { attempt, botId, userId });
+        } else {
+          const answer = await solveAudio(clip.base64, clip.mimeType);
+          this._logger.info('Audio CAPTCHA solver returned an answer', { attempt, answerLength: answer.length, botId, userId });
+          await this.submitCaptchaAnswer(answer);
+        }
+      } catch (err) {
+        this._logger.warn('Audio CAPTCHA solve attempt failed', { attempt, error: err instanceof Error ? err.message : String(err), botId, userId });
+      }
+
+      await this.page.waitForTimeout(1500);
+      if (!(await this.isCaptchaVisible())) {
+        this._logger.info('CAPTCHA dialog cleared after audio solve', { attempt, botId, userId });
+        return true;
+      }
+
+      if (attempt < maxRetries) {
+        await this.refreshCaptcha();
+      }
+    }
+
+    return false;
+  }
+
+  // Clicks the "verify with audio instead" link to switch the challenge type.
+  private async switchToAudioCaptcha(): Promise<boolean> {
+    const audioToggle = this.page.getByRole('button', {
+      name: /áudio|audio|som|sound/i,
+    }).first();
+    if (await audioToggle.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await audioToggle.click().catch(() => undefined);
+      await this.page.waitForTimeout(1000);
+      return true;
+    }
+
+    // Some locales render the switch as a link rather than a button.
+    const audioLink = this.page.getByRole('link', { name: /áudio|audio|som|sound/i }).first();
+    if (await audioLink.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await audioLink.click().catch(() => undefined);
+      await this.page.waitForTimeout(1000);
+      return true;
+    }
+
+    return false;
+  }
+
+  // Clicks the play control so the audio challenge is emitted to the system sink
+  // (captured by ffmpeg from the PulseAudio monitor).
+  private async playCaptchaAudio(): Promise<void> {
+    const play = this.page.getByRole('button', {
+      name: /reproduzir|tocar|play|ouvir|listen/i,
+    }).first();
+    if (await play.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await play.click().catch(() => undefined);
+      // Brief lead so the capture starts after playback begins.
+      await this.page.waitForTimeout(500);
+    }
+  }
+
+  // Capture ONLY the challenge image (never the full page) so meeting
+  // content is never sent to the third-party solver.
+  private async captureCaptchaImage(): Promise<string | null> {
+    const imageSelectors = [
+      '[data-tid="captcha-dialog"] img',
+      'img[alt*="captcha" i]',
+      'img[aria-label*="captcha" i]',
+    ];
+
+    for (const selector of imageSelectors) {
+      const img = this.page.locator(selector).first();
+      if (await img.isVisible({ timeout: 500 }).catch(() => false)) {
+        const buffer = await img.screenshot({ type: 'png' });
+        return buffer.toString('base64');
+      }
+    }
+
+    // Fallback: the first visible image inside the verification dialog.
+    const dialogImg = this.page.getByRole('dialog').locator('img').first();
+    if (await dialogImg.isVisible({ timeout: 500 }).catch(() => false)) {
+      const buffer = await dialogImg.screenshot({ type: 'png' });
+      return buffer.toString('base64');
+    }
+
+    return null;
+  }
+
+  private async submitCaptchaAnswer(answer: string): Promise<void> {
+    const input = this.page.locator([
+      'input[placeholder*="caracteres" i]',
+      'input[placeholder*="characters" i]',
+    ].join(', ')).first();
+    await input.fill(answer.trim());
+
+    const submit = this.page.getByRole('button', { name: /Enviar|Submit|Verificar|Verify/i }).first();
+    await submit.click();
+  }
+
+  private async refreshCaptcha(): Promise<void> {
+    const refresh = this.page.getByRole('button', { name: /Atualizar|Refresh|Novo|New/i }).first();
+    if (await refresh.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await refresh.click();
+      await this.page.waitForTimeout(1000);
+    }
   }
 
   private async recordMeetingPageWithFFmpeg(
