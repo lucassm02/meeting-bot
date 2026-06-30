@@ -7,6 +7,7 @@ import messageBroker from './connect/messageBroker';
 import config from './config';
 import { isPodMarkedForDeletion } from './util/k8sLifecycle';
 import { loggerFactory } from './util/logger';
+import DiskUploader from './middleware/disk-uploader';
 
 const port = 3000;
 
@@ -25,6 +26,13 @@ server.listen(port, () => {
 // (when it does work) — this check is the fallback for the broken case. Safe even
 // if SIGTERM also fires: initiateGracefulShutdown is idempotent (guards on shutdownInProgress).
 const startupLogger = loggerFactory('startup', 'system');
+
+// Recover recordings orphaned by a previous container restart. Runs in the
+// background so it never delays the server coming up; failures are isolated.
+DiskUploader.recoverOrphanedRecordings(startupLogger).catch((err) => {
+  startupLogger.error('Orphaned recording recovery failed to run', err);
+});
+
 setTimeout(() => {
   isPodMarkedForDeletion(startupLogger)
     .then((isDeleted) => {

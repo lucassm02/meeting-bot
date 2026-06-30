@@ -153,6 +153,12 @@ export default {
     signedUrlTtlSeconds: process.env.AZURE_SIGNED_URL_TTL_SECONDS ? Number(process.env.AZURE_SIGNED_URL_TTL_SECONDS) : 3600,
     uploadConcurrency: process.env.AZURE_UPLOAD_CONCURRENCY ? Number(process.env.AZURE_UPLOAD_CONCURRENCY) : 4,
   },
+  // Persistent working directory for in-progress recordings. When set,
+  // temp files + their .meta.json sidecars live here — point it at a mounted volume
+  // so a container recreation doesn't lose the recording and the startup recovery
+  // can finish orphaned uploads. Must be separate from the final recordings dir.
+  // Falls back to dist/_tempvideo (ephemeral) to preserve the previous behaviour.
+  recordingWorkDir: process.env.RECORDING_WORK_DIR,
   // Local filesystem storage (when UPLOADER_TYPE=local)
   localStorage: {
     // Root directory where recordings are written. REQUIRED when UPLOADER_TYPE=local

@@ -20,8 +20,35 @@ import { writeWebmDurationMetadata } from '../lib/webmDuration';
 
 console.log(' ----- PWD OR CWD ----- ', process.cwd());
 
-const tempFolder = path.join(process.cwd(), 'dist', '_tempvideo');
+// Working directory for in-progress recordings. When RECORDING_WORK_DIR is set
+// it points at a persistent mounted volume so temp files survive a container
+// recreation and can be recovered on startup. Falls back to the legacy ephemeral
+// dist/_tempvideo when unset.
+const tempFolder = config.recordingWorkDir
+  ? path.resolve(config.recordingWorkDir)
+  : path.join(process.cwd(), 'dist', '_tempvideo');
 const execFileAsync = promisify(execFile);
+
+// Sidecar written next to each temp file so an orphaned recording can be
+// re-authenticated and re-uploaded on startup without the original job context.
+interface RecordingSidecar {
+  token: string;
+  teamId: string;
+  timezone: string;
+  userId: string;
+  botId: string;
+  namePrefix: string;
+  tempFileId: string;
+  meetingLink?: string;
+  fileExtension: string;
+  startedAt: string;
+}
+
+// To tell an orphan (frozen file) apart from a live recording, the startup
+// recovery samples the temp file's mtime twice across this window: a live
+// recording keeps appending chunks (~every 2s) so its mtime advances, while an
+// orphan stays put. This is robust regardless of how long the restart took.
+const RECOVERY_STABILITY_WINDOW_MS = 5_000;
 
 function isNoSuchUploadError(err: any, userId: string, logger: Logger): boolean {
   /**
@@ -131,6 +158,22 @@ class DiskUploader implements IUploader {
 
     await DiskUploader.setupDirectory(folderPath, userId, logger);
 
+    await DiskUploader.writeSidecar(
+      {
+        token,
+        teamId,
+        timezone,
+        userId,
+        botId,
+        namePrefix,
+        tempFileId,
+        meetingLink,
+        fileExtension: config.uploaderFileExtension,
+        startedAt: new Date().toISOString(),
+      },
+      logger
+    );
+
     const instance = new DiskUploader(
       token,
       teamId,
@@ -143,6 +186,21 @@ class DiskUploader implements IUploader {
       meetingLink
     );
     return instance;
+  }
+
+  private static getSidecarPath(userId: string, tempFileId: string) {
+    return path.join(DiskUploader.getFolderPath(userId), `${tempFileId}.meta.json`);
+  }
+
+  // Persists the job context so recoverOrphanedRecordings() can finish an upload
+  // after a restart. Best-effort: a failure here must not block the recording.
+  private static async writeSidecar(sidecar: RecordingSidecar, logger: Logger) {
+    try {
+      const sidecarPath = DiskUploader.getSidecarPath(sidecar.userId, sidecar.tempFileId);
+      await fs.promises.writeFile(sidecarPath, JSON.stringify(sidecar), 'utf8');
+    } catch (err) {
+      logger.warn('Could not write recording metadata sidecar', sidecar.userId, err);
+    }
   }
 
   private async uploadChunk(data: Buffer, partNumber: number) {
@@ -441,6 +499,12 @@ class DiskUploader implements IUploader {
       this._logger.info(`Temp File deleted from disk: ${absPath}`, this._userId);
     } catch (error) {
       this._logger.warn('Could not clean up temp file:', this._userId, error);
+    }
+    // Drop the recovery sidecar once the recording is safely uploaded.
+    try {
+      await fs.promises.unlink(DiskUploader.getSidecarPath(this._userId, this._tempFileId));
+    } catch {
+      // Sidecar may not exist (legacy recordings); ignore.
     }
   }
 
@@ -838,6 +902,118 @@ class DiskUploader implements IUploader {
     } catch (err) {
       this._logger.info('Unable to upload recording to server...', { error: err, userId: this._userId, teamId: this._teamId });
       return false;
+    }
+  }
+
+  // On startup, finish uploads for recordings orphaned by a container
+  // restart/recreation. Best-effort and isolated — a failure on one orphan never
+  // aborts boot, and "hot" files (active recordings) are left untouched.
+  public static async recoverOrphanedRecordings(logger: Logger): Promise<void> {
+    let userDirs: string[];
+    try {
+      userDirs = await fs.promises.readdir(tempFolder);
+    } catch {
+      // Work dir absent (no recording ever started here): nothing to recover.
+      return;
+    }
+
+    logger.info('Recovery: scanning for orphaned recordings', { tempFolder });
+
+    for (const userId of userDirs) {
+      const folderPath = path.join(tempFolder, userId);
+      let entries: string[];
+      try {
+        if (!(await fs.promises.stat(folderPath)).isDirectory()) continue;
+        entries = await fs.promises.readdir(folderPath);
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (!entry.endsWith('.meta.json')) continue;
+        await DiskUploader.recoverFromSidecar(path.join(folderPath, entry), logger);
+      }
+    }
+  }
+
+  private static async recoverFromSidecar(sidecarPath: string, logger: Logger): Promise<void> {
+    let sidecar: RecordingSidecar;
+    try {
+      sidecar = JSON.parse(await fs.promises.readFile(sidecarPath, 'utf8')) as RecordingSidecar;
+    } catch (err) {
+      logger.warn('Recovery: skipping unreadable sidecar', sidecarPath, err);
+      return;
+    }
+
+    const filePath = DiskUploader.getFilePath(sidecar.userId, sidecar.tempFileId, sidecar.fileExtension);
+
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.stat(filePath);
+    } catch {
+      // Sidecar without any recorded bytes: drop the stale sidecar.
+      logger.info('Recovery: sidecar without temp file, removing', { sidecarPath });
+      await fs.promises.unlink(sidecarPath).catch(() => undefined);
+      return;
+    }
+
+    if (stats.size === 0) {
+      logger.info('Recovery: empty temp file, removing', { filePath });
+      await fs.promises.unlink(filePath).catch(() => undefined);
+      await fs.promises.unlink(sidecarPath).catch(() => undefined);
+      return;
+    }
+
+    // Don't race a live recording: if the file keeps growing across the stability
+    // window it belongs to an active job, so leave it alone.
+    await new Promise((resolve) => setTimeout(resolve, RECOVERY_STABILITY_WINDOW_MS));
+    let recheck: fs.Stats;
+    try {
+      recheck = await fs.promises.stat(filePath);
+    } catch {
+      return; // File vanished mid-check (e.g. a live job just finished it).
+    }
+    if (recheck.mtimeMs !== stats.mtimeMs || recheck.size !== stats.size) {
+      logger.info('Recovery: file still being written (active recording), skipping', { filePath });
+      return;
+    }
+
+    logger.info('Recovery: finishing orphaned recording', {
+      userId: sidecar.userId,
+      tempFileId: sidecar.tempFileId,
+      bytes: stats.size,
+      startedAt: sidecar.startedAt,
+    });
+
+    try {
+      const uploader = await DiskUploader.initialize(
+        sidecar.token,
+        sidecar.teamId,
+        sidecar.timezone,
+        sidecar.userId,
+        sidecar.botId,
+        sidecar.namePrefix,
+        sidecar.tempFileId,
+        logger,
+        sidecar.meetingLink
+      );
+
+      // forceUpload finalises the existing bytes and uploads them; on success the
+      // temp file + sidecar are removed and the orchestrator webhook fires.
+      const ok = await uploader.uploadRecordingToRemoteStorage({ forceUpload: true });
+      if (ok) {
+        logger.info('Recovery: orphaned recording uploaded', { tempFileId: sidecar.tempFileId });
+      } else {
+        // Files are preserved by uploadRecordingToRemoteStorage on failure.
+        logger.error('Recovery: failed to upload orphaned recording; will retry next boot', {
+          tempFileId: sidecar.tempFileId,
+        });
+      }
+    } catch (err) {
+      logger.error('Recovery: error finishing orphaned recording; will retry next boot', {
+        tempFileId: sidecar.tempFileId,
+        error: err,
+      });
     }
   }
 }
