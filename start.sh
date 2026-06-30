@@ -36,6 +36,12 @@ for _ in {1..10}; do
     sleep 0.1
 done
 
+# Clear stale runtime state left behind by a previous run. XDG_RUNTIME_DIR
+# persists across restarts, and leftover pid/lock/socket files make the new
+# daemon refuse to start ("Daemon startup failed"). pulseaudio --kill cannot
+# clean these up when no daemon is alive, so remove them explicitly.
+rm -rf "$XDG_RUNTIME_DIR/pulse" /tmp/pulse-* 2>/dev/null || true
+
 # Start PulseAudio in user mode (simpler and more reliable)
 pulseaudio -D --exit-idle-time=-1 --log-level=info 2>&1
 
@@ -70,6 +76,10 @@ if wait_for_pulseaudio && pgrep -x "pulseaudio" > /dev/null; then
 else
     echo "✗ ERROR: PulseAudio failed to start"
     ps aux | grep pulse
+    # Do not launch the app without audio: it would join meetings and fail
+    # ffmpeg ("virtual_output.monitor: No such process") on every retry,
+    # looping in and out of the call. Exit so the container restarts clean.
+    exit 1
 fi
 
 xvfb-run --server-num=99 --server-args='-screen 0 1280x800x24' npm run start
