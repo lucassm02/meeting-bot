@@ -178,7 +178,8 @@ async function createBrowserContext(url: string, correlationId: string, botType:
   const browserArgs = botType === 'google'
     ? googleBrowserArgs
     : botType === 'microsoft'
-      ? [...recordingBrowserArgs, ...fakeDeviceArgs]
+      // Teams' anonymous-join CAPTCHA needs this relaxed; Zoom breaks with it (SPEC-045), so keep it Teams-only.
+      ? [...recordingBrowserArgs, ...fakeDeviceArgs, '--disable-web-security']
       : recordingBrowserArgs;
   const ignoreDefaultArgs = botType === 'google'
     ? ['--mute-audio', '--enable-automation']
