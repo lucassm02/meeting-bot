@@ -84,8 +84,8 @@ export default {
   teamsPrewarmEnabled: process.env.TEAMS_PREWARM_ENABLED === 'true',
   teamsAudioStabilizationMs: process.env.TEAMS_AUDIO_STABILIZATION_MS ? Number(process.env.TEAMS_AUDIO_STABILIZATION_MS) : 1000,
   // Automatic resolution of the Teams anonymous-join CAPTCHA (Microsoft HIP image-text challenge).
-  // Disabled by default — when off, the bot keeps the previous "detect and abort" behaviour.
-  teamsCaptchaSolverEnabled: process.env.TEAMS_CAPTCHA_SOLVER_ENABLED === 'true',
+  // Enabled by default — set TEAMS_CAPTCHA_SOLVER_ENABLED=false to keep the previous "detect and abort" behaviour.
+  teamsCaptchaSolverEnabled: process.env.TEAMS_CAPTCHA_SOLVER_ENABLED !== 'false',
   // API key of a 2Captcha-compatible image solving service (2Captcha, CapMonster, etc.)
   teamsCaptchaSolverApiKey: process.env.TEAMS_CAPTCHA_SOLVER_API_KEY,
   // Base URL of the 2Captcha-compatible endpoint (override for self-hosted/compatible providers)
@@ -94,10 +94,10 @@ export default {
   teamsCaptchaMaxRetries: process.env.TEAMS_CAPTCHA_MAX_RETRIES ? Number(process.env.TEAMS_CAPTCHA_MAX_RETRIES) : 3,
   // Upper bound for a single solve (submit + polling the provider for the answer)
   teamsCaptchaSolverTimeoutMs: process.env.TEAMS_CAPTCHA_SOLVER_TIMEOUT_MS ? Number(process.env.TEAMS_CAPTCHA_SOLVER_TIMEOUT_MS) : 120000,
-  // Solver provider: '2captcha' (external image-solving service) or 'openai'
-  // (delegates to the orchestrator, which owns the OpenAI key). Defaults to
-  // '2captcha' to preserve the previous behaviour.
-  teamsCaptchaSolverProvider: process.env.TEAMS_CAPTCHA_SOLVER_PROVIDER || '2captcha',
+  // Solver provider: 'openai' (delegates to the orchestrator, which owns the
+  // OpenAI key) or '2captcha' (external image-solving service). Defaults to
+  // 'openai' (higher accuracy, no external paid service).
+  teamsCaptchaSolverProvider: process.env.TEAMS_CAPTCHA_SOLVER_PROVIDER || 'openai',
   // Base URL of the orchestrator's internal CAPTCHA endpoints. Derived from the
   // callback URL the orchestrator already injects (NOTIFY_WEBHOOK_URL minus the
   // /bot-callback suffix) unless explicitly overridden. Used by the 'openai' provider.
