@@ -34,14 +34,18 @@ RUN apt-get update && \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-linux-signing-key.gpg && \
+RUN set -eux; \
+  wget -nv --tries=5 --waitretry=2 --retry-connrefused -O /tmp/google-linux-signing-key.pub https://dl.google.com/linux/linux_signing_key.pub && \
+  test -s /tmp/google-linux-signing-key.pub && \
+  gpg --batch --yes --dearmor -o /usr/share/keyrings/google-linux-signing-key.gpg /tmp/google-linux-signing-key.pub && \
+  rm -f /tmp/google-linux-signing-key.pub && \
   ARCH=$(dpkg --print-architecture) && \
   if [ "$ARCH" = "amd64" ]; then \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-signing-key.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list; \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-signing-key.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list; \
   elif [ "$ARCH" = "arm64" ]; then \
-    echo "deb [arch=arm64 signed-by=/usr/share/keyrings/google-linux-signing-key.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list; \
+    echo "deb [arch=arm64 signed-by=/usr/share/keyrings/google-linux-signing-key.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list; \
   else \
-    echo "deb [signed-by=/usr/share/keyrings/google-linux-signing-key.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list; \
+    echo "deb [signed-by=/usr/share/keyrings/google-linux-signing-key.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list; \
   fi && \
   apt-get update && apt-get install -y google-chrome-stable || apt-get install -y chromium && \
   rm -rf /var/lib/apt/lists/*
