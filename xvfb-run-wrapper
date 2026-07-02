@@ -9,6 +9,8 @@ trap 'echo "forwarding SIGTERM to child"; kill -SIGTERM "$child" 2>/dev/null' SI
 # Set up PulseAudio runtime directory for non-root user
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 echo "Using XDG_RUNTIME_DIR: $XDG_RUNTIME_DIR"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
 
 wait_for_pulseaudio() {
     for _ in {1..25}; do
@@ -20,6 +22,83 @@ wait_for_pulseaudio() {
     return 1
 }
 
+stop_pulseaudio() {
+    pulseaudio --kill 2>/dev/null || true
+    for _ in {1..10}; do
+        if ! pgrep -x "pulseaudio" >/dev/null; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    if pgrep -x "pulseaudio" >/dev/null; then
+        pkill -x pulseaudio 2>/dev/null || true
+        sleep 0.5
+    fi
+}
+
+reset_pulseaudio_runtime() {
+    stop_pulseaudio
+    rm -rf "$XDG_RUNTIME_DIR/pulse" /tmp/pulse-* 2>/dev/null || true
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
+}
+
+start_pulseaudio() {
+    reset_pulseaudio_runtime
+
+    for attempt in 1 2 3; do
+        echo "Starting PulseAudio (attempt $attempt/3)..."
+        pulseaudio -D --exit-idle-time=-1 --log-level=info 2>&1 || true
+
+        if wait_for_pulseaudio && pgrep -x "pulseaudio" >/dev/null; then
+            echo "✓ PulseAudio is running (PID: $(pgrep -x pulseaudio))"
+            return 0
+        fi
+
+        echo "PulseAudio did not become ready on attempt $attempt"
+        reset_pulseaudio_runtime
+        sleep 1
+    done
+
+    return 1
+}
+
+configure_virtual_audio() {
+    SINK_ID=$(pactl load-module module-null-sink sink_name=virtual_output sink_properties=device.description="Virtual_Output" 2>&1)
+    if [ $? -ne 0 ]; then
+        echo "✗ ERROR: Failed to load virtual_output sink: $SINK_ID"
+        return 1
+    fi
+    echo "✓ Loaded null sink module (ID: $SINK_ID)"
+
+    if ! pactl set-default-sink virtual_output 2>&1; then
+        echo "✗ ERROR: Failed to set virtual_output as default sink"
+        return 1
+    fi
+    echo "✓ Set virtual_output as default sink"
+
+    if pactl list sources short | grep -q "virtual_output.monitor"; then
+        echo "✓ Monitor source virtual_output.monitor is available for ffmpeg"
+        return 0
+    fi
+
+    echo "✗ ERROR: Monitor source virtual_output.monitor is not available"
+    echo "=== Available PulseAudio sinks ==="
+    pactl list sinks short || true
+    echo "=== Available PulseAudio sources ==="
+    pactl list sources short || true
+    return 1
+}
+
+fail_audio_startup() {
+    echo "✗ ERROR: PulseAudio audio capture is unavailable; refusing to start meeting bot"
+    ps aux | grep '[p]ulse' || true
+    kill -TERM "$xvfb_pid" 2>/dev/null || true
+    wait "$xvfb_pid" 2>/dev/null || true
+    exit 1
+}
+
 # Start Xvfb (800px height to accommodate 80px offset for address bar)
 Xvfb :99 -screen 0 1280x800x24 &
 xvfb_pid=$!
@@ -29,38 +108,15 @@ sleep 1
 
 # Initialize PulseAudio for audio capture
 echo "Initializing PulseAudio..."
-pulseaudio --kill 2>/dev/null || true
-for _ in {1..10}; do
-    if ! pgrep -x "pulseaudio" >/dev/null; then
-        break
+if ! start_pulseaudio; then
+    fail_audio_startup
+fi
+
+if ! configure_virtual_audio; then
+    echo "Retrying PulseAudio startup after virtual audio setup failure..."
+    if ! start_pulseaudio || ! configure_virtual_audio; then
+        fail_audio_startup
     fi
-    sleep 0.1
-done
-
-# Start PulseAudio in user mode
-pulseaudio -D --exit-idle-time=-1 --log-level=info 2>&1
-
-# Verify PulseAudio is running and set up virtual devices
-if wait_for_pulseaudio && pgrep -x "pulseaudio" > /dev/null; then
-    echo "✓ PulseAudio is running (PID: $(pgrep -x pulseaudio))"
-
-    # Load null sink module (virtual audio output device)
-    SINK_ID=$(pactl load-module module-null-sink sink_name=virtual_output sink_properties=device.description="Virtual_Output" 2>&1)
-    echo "✓ Loaded null sink module (ID: $SINK_ID)"
-
-    # Set as default sink (Teams will play audio here)
-    pactl set-default-sink virtual_output 2>&1
-    echo "✓ Set virtual_output as default sink"
-
-    # Verify monitor source exists for ffmpeg
-    if pactl list sources short | grep -q "virtual_output.monitor"; then
-        echo "✓ Monitor source virtual_output.monitor is available for ffmpeg"
-    else
-        echo "✗ WARNING: Monitor source not found!"
-    fi
-else
-    echo "✗ ERROR: PulseAudio failed to start"
-    ps aux | grep pulse
 fi
 
 # Start your application
