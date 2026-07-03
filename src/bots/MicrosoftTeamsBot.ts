@@ -1,4 +1,4 @@
-import { Page } from 'playwright';
+import { Locator, Page } from 'playwright';
 import { JoinParams } from './AbstractMeetBot';
 import { BotStatus } from '../types';
 import config from '../config';
@@ -195,139 +195,16 @@ export class MicrosoftTeamsBot extends MeetBotBase {
 
     this._logger.info('Waiting for pre-join screen to load...');
 
-    // Try to fill name if input field exists (optional, won't fail if missing)
-    try {
-      this._logger.info('Looking for name input field...');
+    // Fill the pre-join name field (optional; some flows don't ask for a name).
+    await this.fillDisplayName(name);
 
-      // Try multiple selectors: old Teams web uses data-tid; new light-meetings UI uses placeholders
-      const nameInputSelectors = [
-        'input[data-tid="prejoin-display-name-input"]',
-        'input[placeholder*="nome" i]',
-        'input[placeholder*="name" i]',
-        'input[placeholder*="nombre" i]',
-        'input[placeholder*="nom" i]',
-        'input[aria-label*="nome" i]',
-        'input[aria-label*="name" i]',
-      ].join(', ');
-      const nameInput = this.page.locator(nameInputSelectors).first();
-
-      // Wait for the field to be visible
-      await nameInput.waitFor({ state: 'visible', timeout: 45000 });
-
-      this._logger.info('Found name input field, filling with bot name...');
-      await nameInput.fill(name ? name : 'ScreenApp Notetaker');
-    } catch (err) {
-      this._logger.info('Name input field not found after 45s, skipping...', err instanceof Error ? err.message : String(err));
-    }
-
-    // Toggle off camera and mute microphone before joining
-    const toggleDevices = async () => {
-      try {
-        this._logger.info('Attempting to turn off camera and mute microphone...');
-
-        // Turn off camera
-        try {
-          const cameraSelectors = [
-            'input[data-tid="toggle-video"][checked]',
-            'input[type="checkbox"][title*="Turn camera off" i]',
-            'input[role="switch"][data-tid="toggle-video"]',
-            'button[aria-label*="Turn camera off" i]',
-            'button[aria-label*="Camera off" i]',
-          ];
-
-          for (const selector of cameraSelectors) {
-            const cameraButton = this.page.locator(selector).first();
-            const isVisible = await cameraButton.isVisible({ timeout: 1000 }).catch(() => false);
-            if (isVisible) {
-              const label = await cameraButton.getAttribute('aria-label');
-              this._logger.info(`Clicking camera toggle: ${label}`);
-              await cameraButton.click();
-              await this.page.waitForTimeout(250);
-              break;
-            }
-          }
-        } catch (err) {
-          this._logger.info('Could not toggle camera', err instanceof Error ? err.message : String(err));
-        }
-
-        // Mute microphone
-        try {
-          const micSelectors = [
-            'input[data-tid="toggle-mute"]:not([checked])',
-            'input[type="checkbox"][title*="Mute mic" i]',
-            'input[role="switch"][data-tid="toggle-mute"]',
-            'button[aria-label*="Mute microphone" i]',
-            'button[aria-label*="Mute mic" i]',
-          ];
-
-          for (const selector of micSelectors) {
-            const micButton = this.page.locator(selector).first();
-            const isVisible = await micButton.isVisible({ timeout: 1000 }).catch(() => false);
-            if (isVisible) {
-              const label = await micButton.getAttribute('aria-label');
-              this._logger.info(`Clicking microphone toggle: ${label}`);
-              await micButton.click();
-              await this.page.waitForTimeout(250);
-              break;
-            }
-          }
-        } catch (err) {
-          this._logger.info('Could not toggle microphone', err instanceof Error ? err.message : String(err));
-        }
-
-        this._logger.info('Finished toggling camera and microphone');
-      } catch (error) {
-        this._logger.warn('Error toggling devices', error instanceof Error ? error.message : String(error));
-      }
-    };
-
-    await toggleDevices();
+    // Toggle off camera and mute microphone before joining.
+    await this.toggleDevices();
 
     this._logger.info('Clicking the join button...');
     await retryActionWithWait(
       'Clicking the join button',
-      async () => {
-        // Try different possible button texts (locale variants)
-        const possibleTexts = [
-          'Join now',
-          'Join',
-          'Ask to join',
-          'Join meeting',
-          // Portuguese (pt-BR) — light-meetings UI
-          'Ingressar agora',
-          'Ingressar',
-          'Solicitar para ingressar',
-          // Spanish
-          'Unirse ahora',
-          'Unirse',
-          // French
-          'Rejoindre maintenant',
-          'Rejoindre',
-          // German
-          'Jetzt teilnehmen',
-          'Teilnehmen',
-        ];
-
-        let buttonClicked = false;
-
-        for (const text of possibleTexts) {
-          try {
-            const button = this.page.getByRole('button', { name: new RegExp(text, 'i') });
-            if (await button.isVisible({ timeout: 1000 }).catch(() => false)) {
-              await button.click();
-              buttonClicked = true;
-              this._logger.info(`Successfully clicked "${text}" button`);
-              break;
-            }
-          } catch (err) {
-            this._logger.info(`Unable to click "${text}" button, trying next...`);
-          }
-        }
-
-        if (!buttonClicked) {
-          throw new Error('Unable to find any join button variant');
-        }
-      },
+      async () => { await this.clickJoinNow(); },
       this._logger,
       3,
       15000,
@@ -342,7 +219,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     await this.page.waitForTimeout(2000);
     if (await this.isCaptchaVisible()) {
       this._logger.warn('CAPTCHA detected on Teams join (tenant anonymous-join policy)', { botId, userId });
-      const solved = await this.solveCaptchaWithRetries(userId, botId);
+      const solved = await this.solveCaptchaWithRetries(name, userId, botId);
       if (!solved) {
         await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'captcha-detected', userId, this._logger, botId);
         throw new TeamsCaptchaError(`Microsoft Teams CAPTCHA could not be solved after ${config.teamsCaptchaMaxRetries} attempt(s). Tenant policy requires guest verification; consider an authenticated session.`);
@@ -421,25 +298,228 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     pushState('finished');
   }
 
-  // The verification dialog is identified by its character-entry input,
-  // which is locale-stable across the placeholders Teams ships (pt-BR/en).
+  // Turns off camera and mutes the mic on the pre-join screen. Best-effort and
+  // idempotent (only clicks a toggle that is in the "on" state). Shared by the
+  // initial join and retry-screen recovery — the rejoin returns to a fresh
+  // pre-join screen with the camera back on, so it must run there too.
+  private async toggleDevices(): Promise<void> {
+    try {
+      this._logger.info('Attempting to turn off camera and mute microphone...');
+
+      // Turn off camera
+      try {
+        const cameraSelectors = [
+          'input[data-tid="toggle-video"][checked]',
+          'input[type="checkbox"][title*="Turn camera off" i]',
+          'input[role="switch"][data-tid="toggle-video"]',
+          'button[aria-label*="Turn camera off" i]',
+          'button[aria-label*="Camera off" i]',
+        ];
+
+        for (const selector of cameraSelectors) {
+          const cameraButton = this.page.locator(selector).first();
+          const isVisible = await cameraButton.isVisible({ timeout: 1000 }).catch(() => false);
+          if (isVisible) {
+            const label = await cameraButton.getAttribute('aria-label');
+            this._logger.info(`Clicking camera toggle: ${label}`);
+            await cameraButton.click();
+            await this.page.waitForTimeout(250);
+            break;
+          }
+        }
+      } catch (err) {
+        this._logger.info('Could not toggle camera', err instanceof Error ? err.message : String(err));
+      }
+
+      // Mute microphone
+      try {
+        const micSelectors = [
+          'input[data-tid="toggle-mute"]:not([checked])',
+          'input[type="checkbox"][title*="Mute mic" i]',
+          'input[role="switch"][data-tid="toggle-mute"]',
+          'button[aria-label*="Mute microphone" i]',
+          'button[aria-label*="Mute mic" i]',
+        ];
+
+        for (const selector of micSelectors) {
+          const micButton = this.page.locator(selector).first();
+          const isVisible = await micButton.isVisible({ timeout: 1000 }).catch(() => false);
+          if (isVisible) {
+            const label = await micButton.getAttribute('aria-label');
+            this._logger.info(`Clicking microphone toggle: ${label}`);
+            await micButton.click();
+            await this.page.waitForTimeout(250);
+            break;
+          }
+        }
+      } catch (err) {
+        this._logger.info('Could not toggle microphone', err instanceof Error ? err.message : String(err));
+      }
+
+      this._logger.info('Finished toggling camera and microphone');
+    } catch (error) {
+      this._logger.warn('Error toggling devices', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  // Fills the pre-join display-name field. Best-effort: skips silently if the
+  // field never appears. Shared by the initial join and retry-screen recovery.
+  private async fillDisplayName(name: string | undefined, timeoutMs = 45000): Promise<void> {
+    try {
+      this._logger.info('Looking for name input field...');
+      // Old Teams web uses data-tid; the new light-meetings UI uses placeholders.
+      const nameInputSelectors = [
+        'input[data-tid="prejoin-display-name-input"]',
+        'input[placeholder*="nome" i]',
+        'input[placeholder*="name" i]',
+        'input[placeholder*="nombre" i]',
+        'input[placeholder*="nom" i]',
+        'input[aria-label*="nome" i]',
+        'input[aria-label*="name" i]',
+      ].join(', ');
+      const nameInput = this.page.locator(nameInputSelectors).first();
+      await nameInput.waitFor({ state: 'visible', timeout: timeoutMs });
+      this._logger.info('Found name input field, filling with bot name...');
+      await nameInput.fill(name ? name : 'ScreenApp Notetaker');
+    } catch (err) {
+      this._logger.info('Name input field not found, skipping...', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Clicks the Teams "Join now" button across locale variants. Throws if none
+  // is visible. Shared by the initial join and retry-screen recovery.
+  private async clickJoinNow(): Promise<void> {
+    const possibleTexts = [
+      'Join now', 'Join', 'Ask to join', 'Join meeting',
+      // Portuguese (pt-BR) — light-meetings UI
+      'Ingressar agora', 'Ingressar', 'Solicitar para ingressar',
+      // Spanish
+      'Unirse ahora', 'Unirse',
+      // French
+      'Rejoindre maintenant', 'Rejoindre',
+      // German
+      'Jetzt teilnehmen', 'Teilnehmen',
+    ];
+
+    for (const text of possibleTexts) {
+      try {
+        const button = this.page.getByRole('button', { name: new RegExp(text, 'i') });
+        if (await button.isVisible({ timeout: 1000 }).catch(() => false)) {
+          await button.click();
+          this._logger.info(`Successfully clicked "${text}" button`);
+          return;
+        }
+      } catch (err) {
+        this._logger.info(`Unable to click "${text}" button, trying next...`);
+      }
+    }
+
+    throw new Error('Unable to find any join button variant');
+  }
+
+  // Root of the Microsoft HIP verification dialog. Anchored on the ARIA
+  // relationship the Fluent Dialog exposes (role="dialog" describedby the
+  // instructions element), which is stable across image/audio modes and
+  // locale-independent. Fluent `fui-*` class hashes must never be selectors.
+  private captchaDialog(): Locator {
+    return this.page
+      .locator('[role="dialog"][aria-describedby="captcha-dialog-instructions"], [role="dialog"]:has(#captcha-dialog-instructions)')
+      .first();
+  }
+
+  // The answer field. Same element in both modes — targeted by its stable
+  // data-tid, not by placeholder (which changes: "...caracteres que você vê"
+  // for image vs "...o que você está ouvindo" for audio, and per locale).
+  private captchaInput(): Locator {
+    return this.captchaDialog().locator('[data-tid="HIP-Captcha-Input"]').first();
+  }
+
+  // The verification dialog is identified by locale- and mode-independent
+  // anchors: the dialog's ARIA relationship, the instructions id, and the
+  // input's data-tid. No text/placeholder matching, no Fluent class hashes.
   private async isCaptchaVisible(): Promise<boolean> {
     const captchaLocator = this.page.locator([
-      'input[placeholder*="caracteres" i]',
-      'input[placeholder*="characters" i]',
-      '[data-tid="captcha-dialog"]',
+      '[role="dialog"][aria-describedby="captcha-dialog-instructions"]',
+      '#captcha-dialog-instructions',
+      '[data-tid="HIP-Captcha-Input"]',
+      '[data-tid="HIP-Captcha-Audio-Play"]',
     ].join(', ')).first();
     return captchaLocator.isVisible({ timeout: 1000 }).catch(() => false);
   }
 
-  // Solve the HIP CAPTCHA, refreshing the challenge between attempts.
-  // Returns true once the dialog clears, false when attempts are exhausted.
-  private async solveCaptchaWithRetries(userId: string, botId?: string): Promise<boolean> {
+  // The "Não foi possível verificar você" screen Teams shows when the submitted
+  // answer is WRONG. The captcha dialog is gone at this point, so this must be
+  // checked before concluding a solve succeeded — otherwise a wrong answer reads
+  // as success. Recovery is via the rejoin button (see recoverFromRetryScreen).
+  private async isCaptchaRetryScreenVisible(): Promise<boolean> {
+    return this.page.locator('[data-tid="calling-retry-screen"]').first()
+      .isVisible({ timeout: 1000 }).catch(() => false);
+  }
+
+  // Classifies the page state after submitting an answer:
+  //  - 'present':  the captcha dialog is still up (validate in place → refresh).
+  //  - 'rejected': the "could not verify you" screen appeared (wrong answer).
+  //  - 'solved':   neither is showing → the challenge was accepted.
+  // Order matters: dialog first, then the retry screen, else solved.
+  private async classifyCaptchaOutcome(): Promise<'present' | 'rejected' | 'solved'> {
+    if (await this.isCaptchaVisible()) return 'present';
+    if (await this.isCaptchaRetryScreenVisible()) return 'rejected';
+    return 'solved';
+  }
+
+  // Recovers from the retry screen by clicking "Reingressar na chamada", which
+  // returns to the pre-join screen; then re-fills the name and clicks join so
+  // the challenge is presented again for another attempt.
+  private async recoverFromRetryScreen(name: string | undefined, userId: string, botId?: string): Promise<boolean> {
+    const rejoin = this.page.locator('[data-tid="calling-retry-rejoinbutton"]').first();
+    if (!(await rejoin.isVisible({ timeout: 2000 }).catch(() => false))) {
+      return false;
+    }
+    await rejoin.click().catch(() => undefined);
+
+    // The rejoin lands on a fresh pre-join screen: re-fill the name and turn the
+    // camera/mic back off (they reset to "on") before clicking join again.
+    await this.fillDisplayName(name, 15000);
+    await this.toggleDevices();
+    try {
+      await this.clickJoinNow();
+    } catch (err) {
+      this._logger.warn('Could not click join after rejoin', { error: err instanceof Error ? err.message : String(err), botId, userId });
+      return false;
+    }
+
+    // Wait for the challenge to come back before the next solve attempt.
+    await this.page.waitForTimeout(2000);
+    return this.isCaptchaVisible();
+  }
+
+  // One-shot diagnostic: dumps every data-tid inside the captcha dialog so any
+  // future change to the widget's stable anchors is visible in production logs.
+  private async logCaptchaAnchors(botId?: string, userId?: string): Promise<void> {
+    try {
+      const tids = await this.captchaDialog().evaluate((el) =>
+        Array.from(el.querySelectorAll('[data-tid]'))
+          .map((n) => n.getAttribute('data-tid'))
+          .filter((v): v is string => Boolean(v)),
+      );
+      this._logger.info('CAPTCHA dialog data-tid anchors', { tids, botId, userId });
+    } catch (err) {
+      this._logger.warn('Could not read CAPTCHA dialog anchors', { error: err instanceof Error ? err.message : String(err), botId, userId });
+    }
+  }
+
+  // Solve the HIP CAPTCHA. Between attempts it either refreshes the challenge
+  // (dialog still up) or rejoins the meeting (wrong answer bounced us to the
+  // retry screen). Returns true once the challenge is accepted, false when
+  // attempts are exhausted.
+  private async solveCaptchaWithRetries(name: string | undefined, userId: string, botId?: string): Promise<boolean> {
     const solver = getCaptchaSolver(this._logger);
     if (!solver) {
       this._logger.warn('CAPTCHA solver disabled or unconfigured; cannot solve challenge', { botId, userId });
       return false;
     }
+
+    await this.logCaptchaAnchors(botId, userId);
 
     const maxRetries = config.teamsCaptchaMaxRetries;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -456,21 +536,35 @@ export class MicrosoftTeamsBot extends MeetBotBase {
         this._logger.warn('CAPTCHA solve attempt failed', { attempt, error: err instanceof Error ? err.message : String(err), botId, userId });
       }
 
-      // Give the page a moment to validate the answer, then check if it cleared.
+      // Give the page a moment to validate, then classify what we're looking at.
       await this.page.waitForTimeout(1500);
-      if (!(await this.isCaptchaVisible())) {
-        this._logger.info('CAPTCHA dialog cleared after solve', { attempt, botId, userId });
+      const outcome = await this.classifyCaptchaOutcome();
+
+      if (outcome === 'solved') {
+        this._logger.info('CAPTCHA accepted; continuing', { attempt, botId, userId });
         return true;
       }
 
-      if (attempt < maxRetries) {
+      if (attempt >= maxRetries) break;
+
+      if (outcome === 'rejected') {
+        // Wrong answer: Teams navigated to the "could not verify you" screen.
+        // Rejoin to bring the challenge back for the next attempt.
+        this._logger.info('CAPTCHA rejected (retry screen); rejoining for another attempt', { attempt, botId, userId });
+        if (!(await this.recoverFromRetryScreen(name, userId, botId))) {
+          this._logger.warn('Could not recover from CAPTCHA retry screen; aborting', { attempt, botId, userId });
+          return false;
+        }
+      } else {
+        // Still in the dialog: refresh for a fresh challenge and try again.
         this._logger.info('CAPTCHA still present; refreshing challenge for next attempt', { attempt, botId, userId });
         await this.refreshCaptcha();
       }
     }
 
-    // Image attempts exhausted — try the audio challenge as a last resort.
-    if (config.teamsCaptchaAudioFallbackEnabled && typeof solver.solveAudio === 'function') {
+    // Image attempts exhausted — try the audio challenge as a last resort, but
+    // only while the dialog is still up (the audio toggle lives inside it).
+    if (config.teamsCaptchaAudioFallbackEnabled && typeof solver.solveAudio === 'function' && await this.isCaptchaVisible()) {
       this._logger.info('Image CAPTCHA exhausted; attempting audio fallback', { botId, userId });
       if (await this.solveCaptchaViaAudio(solver.solveAudio.bind(solver), userId, botId)) {
         return true;
@@ -509,9 +603,16 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       }
 
       await this.page.waitForTimeout(1500);
-      if (!(await this.isCaptchaVisible())) {
-        this._logger.info('CAPTCHA dialog cleared after audio solve', { attempt, botId, userId });
+      const outcome = await this.classifyCaptchaOutcome();
+      if (outcome === 'solved') {
+        this._logger.info('CAPTCHA accepted after audio solve', { attempt, botId, userId });
         return true;
+      }
+      if (outcome === 'rejected') {
+        // Wrong audio answer bounced us off the dialog; the toggle is gone, so
+        // stop here rather than loop against a screen that no longer has it.
+        this._logger.info('Audio CAPTCHA rejected (retry screen)', { attempt, botId, userId });
+        return false;
       }
 
       if (attempt < maxRetries) {
@@ -522,21 +623,22 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     return false;
   }
 
-  // Clicks the "verify with audio instead" link to switch the challenge type.
+  // Clicks the image/audio toggle (same button both directions; label changes
+  // per mode/locale). Targeted by its stable data-tid, scoped to the dialog.
   private async switchToAudioCaptcha(): Promise<boolean> {
-    const audioToggle = this.page.getByRole('button', {
-      name: /áudio|audio|som|sound/i,
-    }).first();
-    if (await audioToggle.isVisible({ timeout: 1500 }).catch(() => false)) {
-      await audioToggle.click().catch(() => undefined);
+    const dialog = this.captchaDialog();
+    const toggle = dialog.locator('[data-tid="HIP-Captcha-Switch-Type"]').first();
+    if (await toggle.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await toggle.click().catch(() => undefined);
       await this.page.waitForTimeout(1000);
       return true;
     }
 
-    // Some locales render the switch as a link rather than a button.
-    const audioLink = this.page.getByRole('link', { name: /áudio|audio|som|sound/i }).first();
-    if (await audioLink.isVisible({ timeout: 1000 }).catch(() => false)) {
-      await audioLink.click().catch(() => undefined);
+    // Fallback: localized accessible name, as a button or a link.
+    const byText = dialog.getByRole('button', { name: /áudio|audio|som|sound/i })
+      .or(dialog.getByRole('link', { name: /áudio|audio|som|sound/i })).first();
+    if (await byText.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await byText.click().catch(() => undefined);
       await this.page.waitForTimeout(1000);
       return true;
     }
@@ -545,37 +647,33 @@ export class MicrosoftTeamsBot extends MeetBotBase {
   }
 
   // Clicks the play control so the audio challenge is emitted to the system sink
-  // (captured by ffmpeg from the PulseAudio monitor).
+  // (captured by ffmpeg from the PulseAudio monitor). Prefers the stable data-tid
+  // observed on the widget; falls back to the localized accessible name.
   private async playCaptchaAudio(): Promise<void> {
-    const play = this.page.getByRole('button', {
-      name: /reproduzir|tocar|play|ouvir|listen/i,
-    }).first();
-    if (await play.isVisible({ timeout: 1500 }).catch(() => false)) {
-      await play.click().catch(() => undefined);
+    const play = this.captchaDialog().locator('[data-tid="HIP-Captcha-Audio-Play"]').first();
+    const target = (await play.isVisible({ timeout: 1500 }).catch(() => false))
+      ? play
+      : this.captchaDialog().getByRole('button', { name: /reproduzir|tocar|play|ouvir|listen/i }).first();
+    if (await target.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await target.click().catch(() => undefined);
       // Brief lead so the capture starts after playback begins.
       await this.page.waitForTimeout(500);
     }
   }
 
   // Capture ONLY the challenge image (never the full page) so meeting
-  // content is never sent to the third-party solver.
+  // content is never sent to the solver. Targeted by data-tid, scoped to dialog.
   private async captureCaptchaImage(): Promise<string | null> {
-    const imageSelectors = [
-      '[data-tid="captcha-dialog"] img',
-      'img[alt*="captcha" i]',
-      'img[aria-label*="captcha" i]',
-    ];
-
-    for (const selector of imageSelectors) {
-      const img = this.page.locator(selector).first();
-      if (await img.isVisible({ timeout: 500 }).catch(() => false)) {
-        const buffer = await img.screenshot({ type: 'png' });
-        return buffer.toString('base64');
-      }
+    const img = this.captchaDialog()
+      .locator('[data-tid="HIP-Captcha-Image"], img[alt*="captcha" i]')
+      .first();
+    if (await img.isVisible({ timeout: 500 }).catch(() => false)) {
+      const buffer = await img.screenshot({ type: 'png' });
+      return buffer.toString('base64');
     }
 
     // Fallback: the first visible image inside the verification dialog.
-    const dialogImg = this.page.getByRole('dialog').locator('img').first();
+    const dialogImg = this.captchaDialog().locator('img').first();
     if (await dialogImg.isVisible({ timeout: 500 }).catch(() => false)) {
       const buffer = await dialogImg.screenshot({ type: 'png' });
       return buffer.toString('base64');
@@ -585,18 +683,15 @@ export class MicrosoftTeamsBot extends MeetBotBase {
   }
 
   private async submitCaptchaAnswer(answer: string): Promise<void> {
-    const input = this.page.locator([
-      'input[placeholder*="caracteres" i]',
-      'input[placeholder*="characters" i]',
-    ].join(', ')).first();
-    await input.fill(answer.trim());
-
-    const submit = this.page.getByRole('button', { name: /Enviar|Submit|Verificar|Verify/i }).first();
+    await this.captchaInput().fill(answer.trim());
+    // The submit button is disabled until the field has text; Playwright's click
+    // auto-waits for it to become enabled after the fill above.
+    const submit = this.captchaDialog().locator('[data-tid="HIP-Captcha-Submit"]').first();
     await submit.click();
   }
 
   private async refreshCaptcha(): Promise<void> {
-    const refresh = this.page.getByRole('button', { name: /Atualizar|Refresh|Novo|New/i }).first();
+    const refresh = this.captchaDialog().locator('[data-tid="HIP-Captcha-Refresh"]').first();
     if (await refresh.isVisible({ timeout: 1000 }).catch(() => false)) {
       await refresh.click();
       await this.page.waitForTimeout(1000);
