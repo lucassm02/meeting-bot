@@ -2,7 +2,6 @@ import axios from 'axios';
 import crypto from 'crypto';
 import { Logger } from 'winston';
 import config from '../config';
-import { createClient, RedisClientType } from 'redis';
 import { KnownError } from '../error';
 import { getErrorType } from '../util/logger';
 
@@ -49,17 +48,12 @@ export interface MeetingFailureContext {
   provider?: string;
 }
 
-type RedisNotificationPayload = RecordingCompletedPayload | MeetingFailedPayload;
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
 function signPayload(body: string, secret?: string): string | undefined {
   if (!secret) return undefined;
   return crypto.createHmac('sha256', secret).update(body).digest('hex');
 }
 
-async function sendWebhook(payload: RedisNotificationPayload, logger: Logger) {
+async function sendWebhook(payload: RecordingCompletedPayload | MeetingFailedPayload, logger: Logger) {
   if (!config.notifyWebhookEnabled) return;
   if (!config.notifyWebhookUrl) {
     logger.warn('Webhook enabled but NOTIFY_WEBHOOK_URL is not set. Skipping.');
@@ -83,60 +77,8 @@ async function sendWebhook(payload: RedisNotificationPayload, logger: Logger) {
   }
 }
 
-async function rpushToRedisList(
-  payload: RedisNotificationPayload,
-  logger: Logger,
-  list: string,
-  logLabel: string
-) {
-  if (!config.notifyRedisEnabled) return;
-
-  const uri = config.notifyRedisUri || config.redisUri;
-  const db = config.notifyRedisDb;
-
-  if (!uri) {
-    logger.warn('Redis notification enabled but no URI available. Skipping.');
-    return;
-  }
-  if (typeof db !== 'undefined' && (!Number.isInteger(db) || db < 0)) {
-    logger.warn('Redis notification DB is invalid. Skipping.');
-    return;
-  }
-
-  const maxAttempts = 3;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let client: RedisClientType | null = null;
-    try {
-      client = createClient({
-        url: uri,
-        name: 'meetbot-notify',
-        ...(typeof db === 'number' ? { database: db } : {}),
-      });
-      client.on('error', (e) => logger.error('notify redis client error', e));
-      await client.connect();
-      const body = JSON.stringify(payload);
-      await client.rPush(list, body);
-      logger.info(`${logLabel} payload pushed to Redis list ${list} on DB ${typeof db === 'number' ? db : 'default'}.`);
-      return;
-    } catch (err) {
-      logger.error(`Failed to push ${logLabel.toLowerCase()} notification to Redis. Attempt ${attempt}/${maxAttempts}.`, err as any);
-      if (attempt < maxAttempts) {
-        await sleep(1000 * attempt);
-      }
-    } finally {
-      try {
-        if (client) await client.quit();
-      } catch {}
-    }
-  }
-}
-
 export async function notifyRecordingCompleted(payload: RecordingCompletedPayload, logger: Logger) {
-  // Delivery channels are independently controlled by config; run all enabled channels.
-  await Promise.allSettled([
-    sendWebhook(payload, logger),
-    rpushToRedisList(payload, logger, config.notifyRedisList, 'Recording completed'),
-  ]);
+  await sendWebhook(payload, logger);
 }
 
 export function createMeetingFailedPayload(context: MeetingFailureContext, error: unknown): MeetingFailedPayload {
@@ -171,8 +113,5 @@ export function createMeetingFailedPayload(context: MeetingFailureContext, error
 }
 
 export async function notifyMeetingFailed(payload: MeetingFailedPayload, logger: Logger) {
-  await Promise.allSettled([
-    sendWebhook(payload, logger),
-    rpushToRedisList(payload, logger, config.notifyRedisFailureList, 'Meeting failed'),
-  ]);
+  await sendWebhook(payload, logger);
 }

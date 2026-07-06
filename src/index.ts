@@ -1,10 +1,8 @@
 // Ensure global Web Crypto API is available (needed by Azure SDK, polyfill for older Node versions)
 import './shims/crypto-polyfill';
 import http from 'http';
-import app, { redisConsumerService, setGracefulShutdown } from './app';
+import app, { setGracefulShutdown } from './app';
 import { globalJobStore } from './lib/globalJobStore';
-import messageBroker from './connect/messageBroker';
-import config from './config';
 import { isPodMarkedForDeletion } from './util/k8sLifecycle';
 import { loggerFactory } from './util/logger';
 import DiskUploader from './middleware/disk-uploader';
@@ -104,14 +102,6 @@ export const gracefulShutdownApp = () => {
   // Complete existing requests, close database connections, etc.
   server.close(async () => {
     console.log('HTTP server closed. Exiting application');
-
-    // Only shutdown Redis services if Redis is enabled
-    if (config.isRedisEnabled) {
-      await redisConsumerService.shutdown();
-      await messageBroker.quitClientGracefully();
-    } else {
-      console.log('Redis services not running - skipping Redis shutdown');
-    }
 
     console.log('Exiting.....');
     process.exit(0);
