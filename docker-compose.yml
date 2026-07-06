@@ -1,4 +1,25 @@
 services:
+  redis:
+    profiles:
+      - redis
+    image: redis:7-alpine
+    # Host-published port is configurable via REDIS_PORT_HOST (default 6379) so it
+    # can dodge another local Redis already using :6379:
+    #   REDIS_PORT_HOST=6380 docker compose up
+    # Redis support is opt-in. To use this bundled service, run with the profile
+    # and point the bot at the compose service:
+    #   REDIS_CONSUMER_ENABLED=true REDIS_HOST=redis docker compose --profile redis up
+    ports:
+      - "${REDIS_PORT_HOST:-6379}:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - cache:/data
+
   meeting-bot:
     platform: linux/amd64
     build:
@@ -11,6 +32,10 @@ services:
       - .env
     environment:
       - NODE_ENV=development
+      # Redis support is disabled unless REDIS_CONSUMER_ENABLED=true. Keep the
+      # default host suitable for an external local Redis; use REDIS_HOST=redis
+      # together with --profile redis for the bundled compose service.
+      - REDIS_HOST=${REDIS_HOST:-host.docker.internal}
       # Default to the bundled chrome-cdp sidecar so Google Meet joins use a real,
       # signed-in-capable Chrome instead of the bot's in-container Chromium (which
       # Google increasingly blocks). Set GOOGLE_CHROME_CDP_URL= (empty) to fall
@@ -50,3 +75,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+
+volumes:
+  cache:

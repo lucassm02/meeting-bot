@@ -15,6 +15,10 @@ export interface MeetingJoinParams {
   eventId?: string;
 }
 
+export interface MeetingJoinRedisParams extends MeetingJoinParams {
+  provider: MeetingProvider;
+}
+
 export type MeetingProvider = 'google' | 'microsoft' | 'zoom';
 
 const sleep = (ms: number): Promise<void> =>

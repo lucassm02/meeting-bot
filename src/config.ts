@@ -30,9 +30,29 @@ if (missingSettings.length > 0) {
   );
 }
 
+const constructRedisUri = () => {
+  const host = process.env.REDIS_HOST || 'redis';
+  const port = process.env.REDIS_PORT || 6379;
+  const username = process.env.REDIS_USERNAME;
+  const password = process.env.REDIS_PASSWORD;
+
+  if (username && password) {
+    return `redis://${username}:${password}@${host}:${port}`;
+  } else if (password) {
+    return `redis://:${password}@${host}:${port}`;
+  } else {
+    return `redis://${host}:${port}`;
+  }
+};
+
 const normalizeFileExtension = (extension?: string) => {
   if (!extension) return '.webm';
   return extension.startsWith('.') ? extension : `.${extension}`;
+};
+
+const parseOptionalNumber = (value?: string) => {
+  if (typeof value === 'undefined' || value.trim() === '') return undefined;
+  return Number(value);
 };
 
 export default {
@@ -93,12 +113,24 @@ export default {
   region: process.env.GCP_DEFAULT_REGION,
   accessKey: process.env.GCP_ACCESS_KEY_ID ?? '',
   accessSecret: process.env.GCP_SECRET_ACCESS_KEY ?? '',
+  redisQueueName: process.env.REDIS_QUEUE_NAME ?? 'jobs:meetbot:list',
+  redisProcessingQueueName: process.env.REDIS_PROCESSING_QUEUE_NAME ?? 'jobs:meetbot:processing',
+  redisUri: constructRedisUri(),
   // Notification: Webhook (disabled by default)
   notifyWebhookEnabled: process.env.NOTIFY_WEBHOOK_ENABLED === 'true',
   notifyWebhookUrl: process.env.NOTIFY_WEBHOOK_URL,
   // Optional secret to sign payloads (HMAC-SHA256). If set, signature will be sent in X-Webhook-Signature header
   notifyWebhookSecret: process.env.NOTIFY_WEBHOOK_SECRET,
+  // Notification: Redis. Explicitly enabled via NOTIFY_REDIS_ENABLED, and enabled
+  // automatically for Redis-worker mode so completed jobs are written to result list.
+  notifyRedisEnabled: process.env.NOTIFY_REDIS_ENABLED === 'true' || process.env.REDIS_CONSUMER_ENABLED === 'true',
+  // If not provided, uses redisUri with specified database selection
+  notifyRedisUri: process.env.NOTIFY_REDIS_URI, // optional override
+  notifyRedisDb: parseOptionalNumber(process.env.NOTIFY_REDIS_DB),
+  notifyRedisList: process.env.NOTIFY_REDIS_LIST ?? 'jobs:meetbot:recordings',
+  notifyRedisFailureList: process.env.NOTIFY_REDIS_FAILURE_LIST ?? 'jobs:meetbot:failures',
   uploaderFileExtension: normalizeFileExtension(process.env.UPLOADER_FILE_EXTENSION),
+  isRedisEnabled: process.env.REDIS_CONSUMER_ENABLED === 'true',
   s3CompatibleStorage: {
     endpoint: process.env.S3_ENDPOINT,
     region: process.env.S3_REGION,
