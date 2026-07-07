@@ -21,6 +21,7 @@ export interface JoinParams {
   userId: string;
   botId?: string;
   eventId?: string;
+  joinWaitMinutes?: number;
   uploader: IUploader;
 }
 

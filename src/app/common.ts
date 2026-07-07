@@ -13,6 +13,7 @@ export interface MeetingJoinParams {
   timezone: string;
   botId?: string;
   eventId?: string;
+  joinWaitMinutes?: number;
 }
 
 export interface MeetingJoinRedisParams extends MeetingJoinParams {
@@ -35,6 +36,7 @@ export const joinMeetWithRetry = async (
   retryCount: number,
   eventId: undefined | string,
   botId: undefined | string,
+  joinWaitMinutes: undefined | number,
   logger: Logger
 ) => {
   try {
@@ -47,6 +49,9 @@ export const joinMeetWithRetry = async (
       name,
       teamId,
       timezone,
+      joinWaitMinutes: typeof joinWaitMinutes === 'number' && Number.isFinite(joinWaitMinutes) && joinWaitMinutes > 0
+        ? joinWaitMinutes
+        : undefined,
     });
   } catch (error) {
     // Never retry WaitingAtLobbyRetryError - if user doesn't admit bot, retrying won't help
@@ -71,7 +76,7 @@ export const joinMeetWithRetry = async (
       if (retryCount) {
         logger.warn(`Retry attempt: ${retryCount}/${config.retryCount}`);
       }
-      await joinMeetWithRetry(processor, bearerToken, url, name, teamId, timezone, userId, retryCount, eventId, botId, logger);
+      await joinMeetWithRetry(processor, bearerToken, url, name, teamId, timezone, userId, retryCount, eventId, botId, joinWaitMinutes, logger);
     } else {
       throw error;
     }
@@ -88,11 +93,12 @@ export const processMeetingJoin = async (
   userId: string,
   eventId: undefined | string,
   botId: undefined | string,
+  joinWaitMinutes: undefined | number,
   logger: Logger
 ) => {
   try {
     logger.info('LogBasedMetric Bot has started recording meeting.');
-    await joinMeetWithRetry(processor, bearerToken, url, name, teamId, timezone, userId, 0, eventId, botId, logger);
+    await joinMeetWithRetry(processor, bearerToken, url, name, teamId, timezone, userId, 0, eventId, botId, joinWaitMinutes, logger);
     logger.info('LogBasedMetric Bot has finished recording meeting successfully.');
   } catch (error) {
     const errorType = getErrorType(error);

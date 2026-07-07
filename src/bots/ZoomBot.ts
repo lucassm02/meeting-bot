@@ -31,6 +31,13 @@ class BotBase extends AbstractMeetBot {
   }
 }
 
+function joinWaitTimeMs(joinWaitMinutes: number | undefined): number {
+  const minutes = typeof joinWaitMinutes === 'number' && Number.isFinite(joinWaitMinutes) && joinWaitMinutes > 0
+    ? joinWaitMinutes
+    : config.joinWaitTime;
+  return minutes * 60 * 1000;
+}
+
 export class ZoomBot extends BotBase {
   constructor(logger: Logger, correlationId: string) {
     super(logger, correlationId);
@@ -38,7 +45,7 @@ export class ZoomBot extends BotBase {
 
   // TODO use base class for shared functions such as bot status and bot logging
   // TODO Lift the JoinParams to the constructor argument
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, uploader }: JoinParams): Promise<void> {
     const _state: BotStatus[] = ['processing'];
 
     const handleUpload = async () => {
@@ -50,7 +57,7 @@ export class ZoomBot extends BotBase {
     
     try {
       const pushState = (st: BotStatus) => _state.push(st);
-      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, pushState, uploader });
+      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, pushState, uploader });
       await patchBotStatus({ botId, eventId, provider: 'zoom', status: _state, token: bearerToken }, this._logger);
 
       // Finish the upload from the temp video
@@ -306,7 +313,7 @@ export class ZoomBot extends BotBase {
 
     // Wait in waiting room
     try {
-      const wanderingTime = config.joinWaitTime * 60 * 1000; // Give some time to be let in
+      const wanderingTime = joinWaitTimeMs(params.joinWaitMinutes); // Give some time to be let in
 
       let waitTimeout: NodeJS.Timeout;
       let waitInterval: NodeJS.Timeout;

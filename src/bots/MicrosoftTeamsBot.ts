@@ -34,7 +34,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     this._logger = logger;
     this._correlationId = correlationId;
   }
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, uploader }: JoinParams): Promise<void> {
     const _state: BotStatus[] = ['processing'];
 
     const handleUpload = async () => {
@@ -46,7 +46,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
 
     try {
       const pushState = (st: BotStatus) => _state.push(st);
-      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, pushState, uploader });
+      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, pushState, uploader });
 
       // Finish the upload from the temp video
       const uploadResult = await handleUpload();
@@ -99,7 +99,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     }
   }
 
-  private async joinMeeting({ url, name, teamId, userId, eventId, botId, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
+  private async joinMeeting({ url, name, teamId, userId, eventId, botId, joinWaitMinutes, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
     const joinButtonSelectors = [
       // Locale-independent: the launcher page links directly to light-meetings
       'a[href*="light-meetings"]',
@@ -231,7 +231,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
 
     // Do this to ensure meeting bot has joined the meeting
     try {
-      const wanderingTime = config.joinWaitTime * 60 * 1000; // Give some time to be let in
+      const wanderingTime = joinWaitTimeMs(joinWaitMinutes); // Give some time to be let in
       const callButton = this.page.getByRole('button', { name: /Leave|Sair|Salir|Quitter|Verlassen/i });
       await callButton.waitFor({ timeout: wanderingTime });
       this._logger.info('Bot is entering the meeting...');
@@ -1213,4 +1213,11 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       }
     }
   }
+}
+
+function joinWaitTimeMs(joinWaitMinutes: number | undefined): number {
+  const minutes = typeof joinWaitMinutes === 'number' && Number.isFinite(joinWaitMinutes) && joinWaitMinutes > 0
+    ? joinWaitMinutes
+    : config.joinWaitTime;
+  return minutes * 60 * 1000;
 }

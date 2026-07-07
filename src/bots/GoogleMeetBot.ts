@@ -28,7 +28,7 @@ export class GoogleMeetBot extends MeetBotBase {
     this._correlationId = correlationId;
   }
 
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, uploader }: JoinParams): Promise<void> {
     const _state: BotStatus[] = ['processing'];
 
     const handleUpload = async () => {
@@ -40,7 +40,7 @@ export class GoogleMeetBot extends MeetBotBase {
 
     try {
       const pushState = (st: BotStatus) => _state.push(st);
-      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader, pushState });
+      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, uploader, pushState });
 
       // Finish the upload from the temp video
       const uploadResult = await handleUpload();
@@ -90,7 +90,7 @@ export class GoogleMeetBot extends MeetBotBase {
     }
   }
 
-  private async joinMeeting({ url, name, teamId, userId, eventId, botId, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
+  private async joinMeeting({ url, name, teamId, userId, eventId, botId, joinWaitMinutes, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
     this._logger.info('Launching browser...');
 
     this.page = await createBrowserContext(url, this._correlationId, 'google');
@@ -288,7 +288,7 @@ export class GoogleMeetBot extends MeetBotBase {
         await clickContinueWithoutDevicesIfPresent();
 
         // Do this to ensure meeting bot has joined the meeting
-        const wanderingTime = config.joinWaitTime * 60 * 1000; // Give some time to admit the bot
+        const wanderingTime = joinWaitTimeMs(joinWaitMinutes); // Give some time to admit the bot
 
         let waitTimeout: NodeJS.Timeout;
         let waitInterval: NodeJS.Timeout;
@@ -1326,4 +1326,11 @@ export class GoogleMeetBot extends MeetBotBase {
 
     await waitingPromise.promise;
   }
+}
+
+function joinWaitTimeMs(joinWaitMinutes: number | undefined): number {
+  const minutes = typeof joinWaitMinutes === 'number' && Number.isFinite(joinWaitMinutes) && joinWaitMinutes > 0
+    ? joinWaitMinutes
+    : config.joinWaitTime;
+  return minutes * 60 * 1000;
 }
