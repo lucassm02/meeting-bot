@@ -147,6 +147,10 @@ export class RecordingTask extends Task<null, void> {
             }
           };
 
+          // Bridge for an external command (POST /leave) to trigger the same
+          // stop path as a natural end-of-meeting detection.
+          (window as any).__callfredStopRecording = stopTheRecording;
+
           let loneTest: NodeJS.Timeout;
           let monitor = true;
           let hasSeenOtherParticipant = false;

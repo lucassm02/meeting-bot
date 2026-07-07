@@ -16,6 +16,7 @@ import { captureSystemAudioClip } from '../lib/audioCapture';
 import { browserLogCaptureCallback } from '../util/logger';
 import { MICROSOFT_REQUEST_DENIED } from '../constants';
 import { FFmpegRecorder } from '../lib/ffmpegRecorder';
+import { clearActiveRecording, registerActiveRecording } from '../lib/activeRecording';
 import * as path from 'path';
 import * as fs from 'fs';
 import { exec } from 'child_process';
@@ -757,6 +758,14 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     // the silence detector (declared inside the try) to stop on its next tick.
     let meetingEnded = false;
 
+    if (botId) {
+      // Unlike Zoom/Google Meet, the stop signal here is a Node-side flag, not a
+      // browser bridge — no page.evaluate needed.
+      registerActiveRecording(botId, async () => {
+        meetingEnded = true;
+      });
+    }
+
     try {
       await recorder.start();
       recordingStartedAt = Date.now();
@@ -1134,6 +1143,8 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       // Re-throw to be caught by outer try/catch in joinMeeting
       throw error;
     } finally {
+      if (botId) clearActiveRecording(botId);
+
       // Signal the silence detector to stop on its next tick. Without this, the
       // detector keeps polling parec every 5s for minutes after the recording is done
       // (until silence threshold eventually fires or pod exits).

@@ -9,6 +9,7 @@ import { IUploader } from '../middleware/disk-uploader';
 import { Logger } from 'winston';
 import { browserLogCaptureCallback } from '../util/logger';
 import { getWaitingPromise } from '../lib/promise';
+import { clearActiveRecording, registerActiveRecording } from '../lib/activeRecording';
 import { retryActionWithWait } from '../util/resilience';
 import { uploadDebugImage } from '../services/bugService';
 import createBrowserContext, { isExternalBrowserContext } from '../lib/chromium';
@@ -65,6 +66,8 @@ export class GoogleMeetBot extends MeetBotBase {
 
       throw error;
     } finally {
+      if (botId) clearActiveRecording(botId);
+
       // Guarantee chrome subprocess tree is reaped regardless of exit path.
       // No-op if a deeper code path already closed the browser.
       try {
@@ -820,6 +823,10 @@ export class GoogleMeetBot extends MeetBotBase {
             }
           };
 
+          // Bridge for an external command (POST /leave) to trigger the same
+          // stop path as a natural end-of-meeting detection.
+          (window as any).__callfredStopRecording = stopTheRecording;
+
           let loneTest: NodeJS.Timeout;
           let detectionFailures = 0;
           let loneTestDetectionActive = true;
@@ -1262,7 +1269,16 @@ export class GoogleMeetBot extends MeetBotBase {
         mimeTypes
       }
     );
-  
+
+    if (botId) {
+      registerActiveRecording(botId, async () => {
+        await this.page.evaluate(() => {
+          const stop = (window as any).__callfredStopRecording;
+          if (stop) return stop();
+        });
+      });
+    }
+
     this._logger.info('Waiting for recording duration', config.maxRecordingDuration, 'minutes...');
     const processingTime = 0.2 * 60 * 1000;
     const waitingPromise: WaitPromise = getWaitingPromise(processingTime + duration);

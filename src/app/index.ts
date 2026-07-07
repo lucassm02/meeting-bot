@@ -6,6 +6,7 @@ import googleRouter from './google';
 import microsoftRouter from './microsoft';
 import zoomRouter from './zoom';
 import { globalJobStore } from '../lib/globalJobStore';
+import { requestLeaveNow } from '../lib/activeRecording';
 import { RedisConsumerService } from '../connect/RedisConsumerService';
 
 const app = express();
@@ -63,6 +64,16 @@ app.get('/debug', async (req, res, next) => {
 }, async (req, res) => {
   await mainDebug('baf14', 'https://www.github.com');
   res.status(200).send({});
+});
+
+app.post('/leave', async (req, res) => {
+  const { botId } = req.body ?? {};
+  if (typeof botId !== 'string' || !botId) {
+    return res.status(400).json({ ok: false, error: 'botId is required' });
+  }
+
+  const result = await requestLeaveNow(botId);
+  return res.status(result.status).json({ ok: result.ok, error: result.ok ? undefined : result.detail });
 });
 
 app.use('/google', googleRouter);

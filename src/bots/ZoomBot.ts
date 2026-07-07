@@ -8,6 +8,7 @@ import { patchBotStatus } from '../services/botService';
 import { RecordingTask } from '../tasks/RecordingTask';
 import { ContextBridgeTask } from '../tasks/ContextBridgeTask';
 import { getWaitingPromise } from '../lib/promise';
+import { clearActiveRecording, registerActiveRecording } from '../lib/activeRecording';
 import createBrowserContext from '../lib/chromium';
 import { uploadDebugImage } from '../services/bugService';
 import { Logger } from 'winston';
@@ -71,6 +72,8 @@ export class ZoomBot extends BotBase {
 
       throw error;
     } finally {
+      if (botId) clearActiveRecording(botId);
+
       // Guarantee chrome subprocess tree is reaped regardless of exit path.
       // No-op if a deeper code path already closed the browser.
       try {
@@ -516,7 +519,16 @@ export class ZoomBot extends BotBase {
       this._logger
     );
     await recordingTask.runAsync(null);
-  
+
+    if (botId) {
+      registerActiveRecording(botId, async () => {
+        await this.page.evaluate(() => {
+          const stop = (window as any).__callfredStopRecording;
+          if (stop) return stop();
+        });
+      });
+    }
+
     this._logger.info('Waiting for recording duration:', config.maxRecordingDuration, 'minutes...');
     waitingPromise.promise.then(async () => {
       this._logger.info('Closing the browser...');
