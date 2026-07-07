@@ -76,6 +76,11 @@ export default {
     10,
   inactivityLimit: process.env.MEETING_INACTIVITY_MINUTES ? Number(process.env.MEETING_INACTIVITY_MINUTES) : 1,
   activateInactivityDetectionAfter: process.env.INACTIVITY_DETECTION_START_DELAY_MINUTES ? Number(process.env.INACTIVITY_DETECTION_START_DELAY_MINUTES) :  1,
+  // Once `inactivityLimit` is reached, the bot no longer ends the recording right away —
+  // it notifies the orchestrator (idle-started) and keeps recording. Only if silence
+  // continues for this many additional minutes does it fall back to ending on its own,
+  // exactly like before this feature existed (safety net for an unattended empty call).
+  idleFallbackExtraMinutes: process.env.MEETING_IDLE_FALLBACK_EXTRA_MINUTES ? Number(process.env.MEETING_IDLE_FALLBACK_EXTRA_MINUTES) : 10,
   loneParticipantExitDelaySeconds: process.env.LONE_PARTICIPANT_EXIT_DELAY_SECONDS ? Number(process.env.LONE_PARTICIPANT_EXIT_DELAY_SECONDS) : 10,
   serviceKey: process.env.SCREENAPP_BACKEND_SERVICE_API_KEY,
   joinWaitTime: process.env.JOIN_WAIT_TIME_MINUTES ? Number(process.env.JOIN_WAIT_TIME_MINUTES) : 10,

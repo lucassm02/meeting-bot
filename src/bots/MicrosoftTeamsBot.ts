@@ -17,6 +17,7 @@ import { browserLogCaptureCallback } from '../util/logger';
 import { MICROSOFT_REQUEST_DENIED } from '../constants';
 import { FFmpegRecorder } from '../lib/ffmpegRecorder';
 import { clearActiveRecording, registerActiveRecording } from '../lib/activeRecording';
+import { notifyMeetingIdle } from '../services/notificationService';
 import * as path from 'path';
 import * as fs from 'fs';
 import { exec } from 'child_process';
@@ -799,6 +800,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       // Start audio silence detection (runs in parallel with participant detection)
       // Convert inactivityLimit from minutes to milliseconds
       const inactivityLimitMs = config.inactivityLimit * 60 * 1000;
+      const idleFallbackMs = config.idleFallbackExtraMinutes * 60 * 1000;
 
       const monitorAudioSilence = async () => {
         try {
@@ -807,8 +809,10 @@ export class MicrosoftTeamsBot extends MeetBotBase {
             inactivityLimitMinutes: inactivityLimitMs / 60000
           });
           let consecutiveSilentChecks = 0;
+          let idleNotified = false;
           const checkIntervalSeconds = 5;
           const checksNeeded = Math.ceil(inactivityLimitMs / 1000 / checkIntervalSeconds); // e.g., 120000ms / 1000 / 5 = 24 checks
+          const fallbackChecksNeeded = checksNeeded + Math.ceil(idleFallbackMs / 1000 / checkIntervalSeconds);
 
           const checkInterval = setInterval(async () => {
             // If the meeting ended via any other path (browser signal, page-state change,
@@ -837,14 +841,26 @@ export class MicrosoftTeamsBot extends MeetBotBase {
                 consecutiveSilentChecks++;
                 this._logger.info(`Silence detected: ${consecutiveSilentChecks}/${checksNeeded} checks`, { peakLevel });
 
-                if (consecutiveSilentChecks >= checksNeeded) {
-                  this._logger.warn('Audio silence threshold reached, ending Microsoft Teams meeting', {
+                if (!idleNotified && consecutiveSilentChecks >= checksNeeded) {
+                  idleNotified = true;
+                  this._logger.warn('Audio silence threshold reached; notifying idle instead of ending immediately', {
                     userId,
                     teamId,
                     silenceDurationMs: inactivityLimitMs,
                     silenceDurationMinutes: inactivityLimitMs / 60000,
                     finalPeakLevel: peakLevel,
-                    checksNeeded,
+                  });
+                  void notifyMeetingIdle(
+                    { botId: botId ?? '', event: 'idle-started', silenceSeconds: Math.round(inactivityLimitMs / 1000) },
+                    this._logger,
+                  ).catch((error) => this._logger.warn('Failed to deliver idle notification', error));
+                }
+
+                if (consecutiveSilentChecks >= fallbackChecksNeeded) {
+                  this._logger.warn('Silence exceeded fallback window, ending Microsoft Teams meeting', {
+                    userId,
+                    teamId,
+                    checksNeeded: fallbackChecksNeeded,
                     checksDetected: consecutiveSilentChecks
                   });
                   clearInterval(checkInterval);
@@ -854,6 +870,12 @@ export class MicrosoftTeamsBot extends MeetBotBase {
                 // Reset counter if we detect audio
                 if (consecutiveSilentChecks > 0) {
                   this._logger.info('Audio detected, resetting silence counter', { peakLevel });
+                }
+                if (idleNotified) {
+                  void notifyMeetingIdle({ botId: botId ?? '', event: 'idle-cleared' }, this._logger).catch((error) =>
+                    this._logger.warn('Failed to deliver idle notification', error),
+                  );
+                  idleNotified = false;
                 }
                 consecutiveSilentChecks = 0;
               }

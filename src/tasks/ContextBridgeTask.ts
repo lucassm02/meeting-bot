@@ -5,12 +5,14 @@ import { WaitPromise } from '../types';
 import { IUploader } from '../middleware/disk-uploader';
 import { Logger } from 'winston';
 import { browserLogCaptureCallback } from '../util/logger';
+import { notifyMeetingIdle } from '../services/notificationService';
 
 export class ContextBridgeTask extends Task<null, void> {
   private page: Page;
   private uploader: IUploader;
   private slightlySecretId: string;
   private waitingPromise: WaitPromise;
+  private botId: string;
 
   constructor(
     page: Page,
@@ -25,6 +27,7 @@ export class ContextBridgeTask extends Task<null, void> {
     this.slightlySecretId = slightlySecretId;
     this.waitingPromise = waitingPromise;
     this.uploader = uploader;
+    this.botId = params.botId;
   }
 
   protected async execute(input: null): Promise<void> {
@@ -55,6 +58,13 @@ export class ContextBridgeTask extends Task<null, void> {
       } catch (error) {
         this._logger.error('Could not process meeting end event', error);
       }
+    });
+
+    await this.page.exposeFunction('screenAppMeetingIdle', (slightlySecretId: string, event: 'idle-started' | 'idle-cleared', silenceSeconds?: number) => {
+      if (slightlySecretId !== this.slightlySecretId) return;
+      void notifyMeetingIdle({ botId: this.botId, event, silenceSeconds }, this._logger).catch((error) => {
+        this._logger.warn('Failed to deliver idle notification', error);
+      });
     });
   }
 }

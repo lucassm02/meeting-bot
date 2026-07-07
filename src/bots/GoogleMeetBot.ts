@@ -16,6 +16,7 @@ import createBrowserContext, { isExternalBrowserContext } from '../lib/chromium'
 import { GOOGLE_LOBBY_MODE_HOST_TEXT, GOOGLE_REQUEST_DENIED, GOOGLE_REQUEST_TIMEOUT } from '../constants';
 import { getRecordingMimeTypesForExtension } from '../lib/recording';
 import { getGoogleMeetDisplayName } from '../util/googleMeetDisplayName';
+import { notifyMeetingIdle } from '../services/notificationService';
 
 export class GoogleMeetBot extends MeetBotBase {
   private _logger: Logger;
@@ -686,12 +687,20 @@ export class GoogleMeetBot extends MeetBotBase {
       }
     });
 
+    await this.page.exposeFunction('screenAppMeetingIdle', (slightlySecretId: string, event: 'idle-started' | 'idle-cleared', silenceSeconds?: number) => {
+      if (slightlySecretId !== this.slightlySecretId) return;
+      void notifyMeetingIdle({ botId: botId ?? '', event, silenceSeconds }, this._logger).catch((error) => {
+        this._logger.warn('Failed to deliver idle notification', error);
+      });
+    });
+
     const { mimeTypes } = getRecordingMimeTypesForExtension(config.uploaderFileExtension);
+    const idleFallbackMs = config.idleFallbackExtraMinutes * 60 * 1000;
 
     // Inject the MediaRecorder code into the browser context using page.evaluate
     await this.page.evaluate(
-      async ({ teamId, duration, inactivityLimit, loneParticipantExitDelayMs, userId, slightlySecretId, activateInactivityDetectionAfter, activateInactivityDetectionAfterMinutes, mimeTypes }:
-      { teamId:string, userId: string, duration: number, inactivityLimit: number, loneParticipantExitDelayMs: number, slightlySecretId: string, activateInactivityDetectionAfter: string, activateInactivityDetectionAfterMinutes: number, mimeTypes: string[] }) => {
+      async ({ teamId, duration, inactivityLimit, idleFallbackMs, loneParticipantExitDelayMs, userId, slightlySecretId, activateInactivityDetectionAfter, activateInactivityDetectionAfterMinutes, mimeTypes }:
+      { teamId:string, userId: string, duration: number, inactivityLimit: number, idleFallbackMs: number, loneParticipantExitDelayMs: number, slightlySecretId: string, activateInactivityDetectionAfter: string, activateInactivityDetectionAfterMinutes: number, mimeTypes: string[] }) => {
         let timeoutId: NodeJS.Timeout;
         let inactivitySilenceDetectionTimeout: NodeJS.Timeout;
         let isOnValidGoogleMeetPageInterval: NodeJS.Timeout;
@@ -1070,12 +1079,14 @@ export class GoogleMeetBot extends MeetBotBase {
               
               // Sliding silence period
               let silenceDuration = 0;
+              let idleNotified = false;
               let totalChecks = 0;
               let audioActivitySum = 0;
               let lastActivityLogTime = 0;
 
               // Audio gain/volume
               const silenceThreshold = 10;
+              const fallbackLimit = inactivityLimit + idleFallbackMs;
 
               let monitor = true;
 
@@ -1104,13 +1115,25 @@ export class GoogleMeetBot extends MeetBotBase {
 
                   if (audioActivity < silenceThreshold) {
                     silenceDuration += 100; // Check every 100ms
-                    if (silenceDuration >= inactivityLimit) {
-                        console.warn('Detected silence in Google Meet and ending the recording on team:', userId, teamId);
+
+                    if (!idleNotified && silenceDuration >= inactivityLimit) {
+                      console.warn('Detected silence in Google Meet; notifying idle instead of ending immediately:', userId, teamId);
+                      idleNotified = true;
+                      (window as any).screenAppMeetingIdle(slightlySecretId, 'idle-started', Math.round(silenceDuration / 1000));
+                    }
+
+                    if (silenceDuration >= fallbackLimit) {
+                        console.warn('Silence exceeded fallback window; ending the recording on team:', userId, teamId);
                         console.log('Silence detection stats - Avg audio activity:', (audioActivitySum / totalChecks).toFixed(2), 'Checks performed:', totalChecks);
                         monitor = false;
                         stopTheRecording();
+                        return;
                     }
                   } else {
+                    if (idleNotified) {
+                      (window as any).screenAppMeetingIdle(slightlySecretId, 'idle-cleared');
+                      idleNotified = false;
+                    }
                     silenceDuration = 0;
                   }
 
@@ -1257,10 +1280,11 @@ export class GoogleMeetBot extends MeetBotBase {
         // Start the recording
         await startRecording();
       },
-      { 
+      {
         teamId,
         duration,
         inactivityLimit,
+        idleFallbackMs,
         loneParticipantExitDelayMs,
         userId,
         slightlySecretId: this.slightlySecretId,

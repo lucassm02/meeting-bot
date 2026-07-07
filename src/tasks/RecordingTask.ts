@@ -10,8 +10,9 @@ export class RecordingTask extends Task<null, void> {
   private page: Page;
   private duration: number;
   private inactivityLimit: number;
+  private idleFallbackMs: number;
   private slightlySecretId: string;
-  
+
   constructor(
     userId: string,
     teamId: string,
@@ -25,6 +26,7 @@ export class RecordingTask extends Task<null, void> {
     this.teamId = teamId;
     this.duration = duration;
     this.inactivityLimit = config.inactivityLimit * 60 * 1000;
+    this.idleFallbackMs = config.idleFallbackExtraMinutes * 60 * 1000;
     this.page = page;
     this.slightlySecretId = slightlySecretId;
   }
@@ -34,8 +36,8 @@ export class RecordingTask extends Task<null, void> {
     const loneParticipantExitDelayMs = config.loneParticipantExitDelaySeconds * 1000;
 
     await this.page.evaluate(
-      async ({ teamId, duration, inactivityLimit, loneParticipantExitDelayMs, userId, slightlySecretId, activateInactivityDetectionAfter, activateInactivityDetectionAfterMinutes, mimeTypes }:
-        { teamId: string, duration: number, inactivityLimit: number, loneParticipantExitDelayMs: number, userId: string, slightlySecretId: string, activateInactivityDetectionAfter: string, activateInactivityDetectionAfterMinutes: number, mimeTypes: string[] }) => {
+      async ({ teamId, duration, inactivityLimit, idleFallbackMs, loneParticipantExitDelayMs, userId, slightlySecretId, activateInactivityDetectionAfter, activateInactivityDetectionAfterMinutes, mimeTypes }:
+        { teamId: string, duration: number, inactivityLimit: number, idleFallbackMs: number, loneParticipantExitDelayMs: number, userId: string, slightlySecretId: string, activateInactivityDetectionAfter: string, activateInactivityDetectionAfterMinutes: number, mimeTypes: string[] }) => {
         let timeoutId: NodeJS.Timeout;
         let inactivitySilenceDetectionTimeout: NodeJS.Timeout;
 
@@ -262,9 +264,11 @@ export class RecordingTask extends Task<null, void> {
 
             // Sliding silence period
             let silenceDuration = 0;
+            let idleNotified = false;
 
             // Audio gain/volume
             const silenceThreshold = 10;
+            const fallbackLimit = inactivityLimit + idleFallbackMs;
 
             const monitorSilence = () => {
               analyser.getByteFrequencyData(dataArray);
@@ -273,13 +277,25 @@ export class RecordingTask extends Task<null, void> {
 
               if (audioActivity < silenceThreshold) {
                 silenceDuration += 100; // Check every 100ms
-                if (silenceDuration >= inactivityLimit) {
-                  console.warn('Detected silence in Zoom Meeting and ending the recording on team:', userId, teamId);
+
+                if (!idleNotified && silenceDuration >= inactivityLimit) {
+                  console.warn('Detected silence in Zoom Meeting; notifying idle instead of ending immediately:', userId, teamId);
+                  idleNotified = true;
+                  (window as any).screenAppMeetingIdle(slightlySecretId, 'idle-started', Math.round(silenceDuration / 1000));
+                }
+
+                if (silenceDuration >= fallbackLimit) {
+                  console.warn('Silence exceeded fallback window; ending the recording on team:', userId, teamId);
                   monitor = false;
                   clearInterval(loneTest);
                   stopTheRecording();
+                  return;
                 }
               } else {
+                if (idleNotified) {
+                  (window as any).screenAppMeetingIdle(slightlySecretId, 'idle-cleared');
+                  idleNotified = false;
+                }
                 silenceDuration = 0;
               }
 
@@ -312,12 +328,13 @@ export class RecordingTask extends Task<null, void> {
         // Start the recording
         await startRecording();
       },
-      { 
+      {
         teamId: this.teamId,
         duration: this.duration,
-        inactivityLimit: this.inactivityLimit, 
+        inactivityLimit: this.inactivityLimit,
+        idleFallbackMs: this.idleFallbackMs,
         loneParticipantExitDelayMs,
-        userId: this.userId, 
+        userId: this.userId,
         slightlySecretId: this.slightlySecretId,
         activateInactivityDetectionAfterMinutes: config.activateInactivityDetectionAfter,
         activateInactivityDetectionAfter: new Date(new Date().getTime() + config.activateInactivityDetectionAfter * 60 * 1000).toISOString(),

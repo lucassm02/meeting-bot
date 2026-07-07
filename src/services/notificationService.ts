@@ -176,3 +176,31 @@ export async function notifyMeetingFailed(payload: MeetingFailedPayload, logger:
     rpushToRedisList(payload, logger, config.notifyRedisFailureList, 'Meeting failed'),
   ]);
 }
+
+export interface MeetingIdleNotification {
+  botId: string;
+  event: 'idle-started' | 'idle-cleared';
+  silenceSeconds?: number;
+}
+
+// Delivered to a dedicated internal orchestrator route (not the terminal
+// /bot-callback webhook): the recording keeps running after this, so it must
+// not resolve/reject the pending completion promise like a normal callback would.
+export async function notifyMeetingIdle(payload: MeetingIdleNotification, logger: Logger): Promise<void> {
+  if (!config.orchestratorInternalUrl) {
+    logger.warn('Cannot deliver idle notification: orchestrator URL unknown (set ORCHESTRATOR_INTERNAL_URL or NOTIFY_WEBHOOK_URL)');
+    return;
+  }
+
+  try {
+    await axios.post(`${config.orchestratorInternalUrl}/internal/meetings/idle`, {
+      ...payload,
+      timestamp: new Date().toISOString(),
+    }, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 10000,
+    });
+  } catch (err) {
+    logger.error('Failed to deliver idle notification', err as any);
+  }
+}
