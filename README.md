@@ -19,6 +19,8 @@ An open-source automation bot for joining and recording video meetings across mu
 - **Prometheus Metrics**: Built-in monitoring and metrics collection
 - **Stealth Mode**: Advanced browser automation with anti-detection measures
 - **Completion Notifications**: Optional webhook and Redis notifications when a recording is completed
+- **External Leave Command**: `POST /leave` ends the active recording immediately on external request, as if the meeting had ended naturally
+- **Idle Notifications**: on prolonged silence, notifies the orchestrator instead of ending the recording right away, so a human can decide — only falls back to ending on its own if the silence keeps going well past that point
 
 ## 🚀 Quick Start
 
@@ -125,6 +127,19 @@ Content-Type: application/json
 }
 ```
 
+#### Leave the Current Recording
+
+```bash
+POST /leave
+Content-Type: application/json
+
+{
+  "botId": "UUID"
+}
+```
+
+Ends the recording currently in progress immediately, exactly as if the meeting had ended naturally: the recorder stops, pending chunks are flushed, the real recorded duration is reported, and the upload/completion notification proceeds as usual — nothing is marked as failed. Since only one recording is active per provider process at a time, `botId` just has to match the recording currently in progress. Returns `200` when found and stopped; `404`/`409` when there is no active recording or the `botId` doesn't match (e.g. a delayed/duplicate command arriving after the recording already ended on its own).
+
 ### Recording Completion Notifications (Optional)
 
 You can configure Meeting Bot to notify external systems when a recording has finished and is ready. Two channels are supported:
@@ -191,6 +206,25 @@ Notes:
 - Failure notifications are Redis-only and use the same NOTIFY_REDIS_ENABLED, NOTIFY_REDIS_URI, and NOTIFY_REDIS_DB settings.
 - If both channels are enabled, both will receive the payload.
 - Failures to notify are logged but do not interrupt the main recording flow.
+
+### Idle (Silence) Notifications
+
+Once `MEETING_INACTIVITY_MINUTES` of continuous silence is reached, the bot no longer ends the recording right away — it notifies the orchestrator and keeps recording, so a human can decide whether to end it (e.g. from the web UI) or let it keep going. If audio resumes, a follow-up notification clears the idle state. Only if the silence keeps going for `MEETING_IDLE_FALLBACK_EXTRA_MINUTES` on top of that does the bot fall back to ending the recording on its own, as a safety net for an unattended empty call — same natural-end path used for every other end-of-meeting trigger.
+
+Unlike the completion webhook above, idle notifications are delivered directly to a dedicated internal orchestrator route — `POST {ORCHESTRATOR_INTERNAL_URL}/internal/meetings/idle` (same base URL used for the CAPTCHA-solving endpoints, derived from `NOTIFY_WEBHOOK_URL` when not set explicitly) — since the recording is still in progress and this must not resolve/reject the pending completion callback the way `/bot-callback` does.
+
+Payload:
+
+```json
+{
+  "botId": "bot-uuid",
+  "event": "idle-started",
+  "silenceSeconds": 60,
+  "timestamp": "2025-09-08T12:00:00Z"
+}
+```
+
+`event` is `idle-started` or `idle-cleared` (`silenceSeconds` is only present on `idle-started`). Delivery failures are logged and do not interrupt the recording.
 
 #### Check System Status
 ```bash
@@ -465,7 +499,8 @@ Notes:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MAX_RECORDING_DURATION_MINUTES` | Maximum recording duration in minutes | `180` |
-| `MEETING_INACTIVITY_MINUTES` | Continuous inactivity duration after which the bot will end meeting recording | `1` |
+| `MEETING_INACTIVITY_MINUTES` | Continuous inactivity duration after which the bot notifies the orchestrator that the meeting is idle (see [Idle Notifications](#idle-silence-notifications)) | `1` |
+| `MEETING_IDLE_FALLBACK_EXTRA_MINUTES` | Extra minutes of continued silence after the idle notification before the bot falls back to ending the recording on its own | `10` |
 | `INACTIVITY_DETECTION_START_DELAY_MINUTES` | Initial grace period at the start of recording before inactivity detection begins | `1` |
 | `LONE_PARTICIPANT_EXIT_DELAY_SECONDS` | Delay before stopping after the bot has seen other participants and then becomes alone | `10` |
 | `TEAMS_PREWARM_ENABLED` | Enable the extra Microsoft Teams warmup browser pass for environments that still show first-run dialogs | `false` |
