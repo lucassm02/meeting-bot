@@ -16,6 +16,8 @@ import createBrowserContext, { isExternalBrowserContext } from '../lib/chromium'
 import { GOOGLE_LOBBY_MODE_HOST_TEXT, GOOGLE_REQUEST_DENIED, GOOGLE_REQUEST_TIMEOUT } from '../constants';
 import { getRecordingMimeTypesForExtension } from '../lib/recording';
 import { getGoogleMeetDisplayName } from '../util/googleMeetDisplayName';
+import { startSpeakerTimelineCollector, type SpeakerTimelineCollector } from '../lib/speakerTimeline';
+import { MEET_SPEAKER_SELECTORS } from '../constants/speakerSelectors';
 import { notifyMeetingIdle } from '../services/notificationService';
 
 export class GoogleMeetBot extends MeetBotBase {
@@ -674,6 +676,24 @@ export class GoogleMeetBot extends MeetBotBase {
       await uploader.saveDataToTempFile(buffer);
     });
 
+    // O MediaRecorder roda no navegador: ele avisa quando começa, e a linha do
+    // tempo de oradores passa a ser medida a partir desse instante.
+    let speakerCollector: SpeakerTimelineCollector | undefined;
+    await this.page.exposeFunction('callfredRecordingStarted', (slightlySecretId: string) => {
+      if (slightlySecretId !== this.slightlySecretId || speakerCollector) return;
+      try {
+        speakerCollector = startSpeakerTimelineCollector({
+          page: this.page,
+          startedAt: Date.now(),
+          selectors: MEET_SPEAKER_SELECTORS,
+          logger: this._logger,
+          platform: 'meet',
+        });
+      } catch (error) {
+        this._logger.warn('Speaker timeline collector not started', error);
+      }
+    });
+
     await this.page.exposeFunction('screenAppMeetEnd', (slightlySecretId: string, recordedDurationSeconds?: number) => {
       if (slightlySecretId !== this.slightlySecretId) return;
       try {
@@ -779,6 +799,7 @@ export class GoogleMeetBot extends MeetBotBase {
           const chunkDuration = 2000;
           mediaRecorder.start(chunkDuration);
           const recordingStartedAt = Date.now();
+          void (window as any).callfredRecordingStarted?.(slightlySecretId);
           const initialAloneGraceMs = activateInactivityDetectionAfterMinutes * 60 * 1000;
 
           let dismissModalsInterval: NodeJS.Timeout;
@@ -1308,6 +1329,13 @@ export class GoogleMeetBot extends MeetBotBase {
     const waitingPromise: WaitPromise = getWaitingPromise(processingTime + duration);
 
     waitingPromise.promise.then(async () => {
+      if (speakerCollector) {
+        try {
+          uploader.setSpeakerTimeline(speakerCollector.stop());
+        } catch (error) {
+          this._logger.warn('Speaker timeline not attached to the recording', error);
+        }
+      }
       const context = this.page.context();
       // For an external CDP browser (the chrome-cdp sidecar), browser.close() only
       // disconnects Playwright — it leaves the Meet tab open, so the bot stays in
