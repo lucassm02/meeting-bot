@@ -18,6 +18,8 @@ import { MICROSOFT_REQUEST_DENIED } from '../constants';
 import { FFmpegRecorder } from '../lib/ffmpegRecorder';
 import { clearActiveRecording, registerActiveRecording } from '../lib/activeRecording';
 import { notifyMeetingIdle } from '../services/notificationService';
+import { startSpeakerTimelineCollector, type SpeakerTimelineCollector } from '../lib/speakerTimeline';
+import { TEAMS_SPEAKER_SELECTORS } from '../constants/speakerSelectors';
 import * as path from 'path';
 import * as fs from 'fs';
 import { exec } from 'child_process';
@@ -755,6 +757,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     let ffmpegFailed = false;
     let ffmpegError: Error | null = null;
     let recordingStartedAt: number | undefined;
+    let speakerCollector: SpeakerTimelineCollector | undefined;
     // Hoisted out of the try block so the matching finally can set it to signal
     // the silence detector (declared inside the try) to stop on its next tick.
     let meetingEnded = false;
@@ -772,6 +775,19 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       recordingStartedAt = Date.now();
       const startedAt = recordingStartedAt;
       this._logger.info('FFmpeg recording started successfully');
+
+      // Quem fala em cada momento, medido a partir do início do ffmpeg.
+      try {
+        speakerCollector = startSpeakerTimelineCollector({
+          page: this.page,
+          startedAt,
+          selectors: TEAMS_SPEAKER_SELECTORS,
+          logger: this._logger,
+          platform: 'teams',
+        });
+      } catch (err) {
+        this._logger.warn('Speaker timeline collector not started', err);
+      }
 
       // Monitor FFmpeg process - if it dies, stop recording immediately
       recorder.onProcessExit((code) => {
@@ -1179,6 +1195,14 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       // Stage the recorded file for upload (the actual remote upload happens in
       // join()'s handleUpload after joinMeeting returns).
       this._logger.info('Staging recorded file for upload...', { outputPath });
+
+      if (speakerCollector) {
+        try {
+          uploader.setSpeakerTimeline(speakerCollector.stop());
+        } catch (err) {
+          this._logger.warn('Speaker timeline not attached to the recording', err);
+        }
+      }
 
       let staged = false;
       if (fs.existsSync(outputPath)) {
