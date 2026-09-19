@@ -21,7 +21,8 @@ const joinGoogleMeet = async (req: Request, res: Response) => {
     userId,
     eventId,
     botId,
-    joinWaitMinutes
+    joinWaitMinutes,
+    collectCaptions
   }: MeetingJoinParams = req.body;
 
   // Validate required fields
@@ -66,7 +67,7 @@ const joinGoogleMeet = async (req: Request, res: Response) => {
 
       // Create and join the meeting
       const bot = new GoogleMeetBot(logger, correlationId);
-      await bot.join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, uploader });
+      await bot.join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, collectCaptions: collectCaptions === true, uploader });
     }, logger, 0, (error) => notifyMeetingJoinFailure({
       bearerToken,
       url,

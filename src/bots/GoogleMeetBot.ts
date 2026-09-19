@@ -18,11 +18,14 @@ import { getRecordingMimeTypesForExtension } from '../lib/recording';
 import { getGoogleMeetDisplayName } from '../util/googleMeetDisplayName';
 import { startSpeakerTimelineCollector, type SpeakerTimelineCollector } from '../lib/speakerTimeline';
 import { MEET_SPEAKER_SELECTORS } from '../constants/speakerSelectors';
+import { MEET_CAPTION_SELECTORS } from '../constants/captionSelectors';
+import { startCaptionCollector, type CaptionCollector } from '../lib/captions';
 import { notifyMeetingIdle } from '../services/notificationService';
 
 export class GoogleMeetBot extends MeetBotBase {
   private _logger: Logger;
   private _correlationId: string;
+  private _collectCaptions = false;
   constructor(logger: Logger, correlationId: string) {
     super();
     this.slightlySecretId = v4();
@@ -30,7 +33,8 @@ export class GoogleMeetBot extends MeetBotBase {
     this._correlationId = correlationId;
   }
 
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, collectCaptions, uploader }: JoinParams): Promise<void> {
+    this._collectCaptions = collectCaptions === true;
     const _state: BotStatus[] = ['processing'];
 
     const handleUpload = async () => {
@@ -679,18 +683,34 @@ export class GoogleMeetBot extends MeetBotBase {
     // O MediaRecorder roda no navegador: ele avisa quando começa, e a linha do
     // tempo de oradores passa a ser medida a partir desse instante.
     let speakerCollector: SpeakerTimelineCollector | undefined;
+    let captionCollector: CaptionCollector | undefined;
     await this.page.exposeFunction('callfredRecordingStarted', (slightlySecretId: string) => {
       if (slightlySecretId !== this.slightlySecretId || speakerCollector) return;
+      const startedAt = Date.now();
       try {
         speakerCollector = startSpeakerTimelineCollector({
           page: this.page,
-          startedAt: Date.now(),
+          startedAt,
           selectors: MEET_SPEAKER_SELECTORS,
           logger: this._logger,
           platform: 'meet',
         });
       } catch (error) {
         this._logger.warn('Speaker timeline collector not started', error);
+      }
+      // Legendas nativas (experimental): só com a flag ligada na API.
+      if (this._collectCaptions) {
+        try {
+          captionCollector = startCaptionCollector({
+            page: this.page,
+            startedAt,
+            selectors: MEET_CAPTION_SELECTORS,
+            logger: this._logger,
+            platform: 'meet',
+          });
+        } catch (error) {
+          this._logger.warn('Caption collector not started', error);
+        }
       }
     });
 
@@ -1334,6 +1354,13 @@ export class GoogleMeetBot extends MeetBotBase {
           uploader.setSpeakerTimeline(speakerCollector.stop());
         } catch (error) {
           this._logger.warn('Speaker timeline not attached to the recording', error);
+        }
+      }
+      if (captionCollector) {
+        try {
+          uploader.setCaptions(captionCollector.stop());
+        } catch (error) {
+          this._logger.warn('Captions not attached to the recording', error);
         }
       }
       const context = this.page.context();

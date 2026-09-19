@@ -14,6 +14,7 @@ export interface MeetingJoinParams {
   botId?: string;
   eventId?: string;
   joinWaitMinutes?: number;
+  collectCaptions?: boolean;
 }
 
 export interface MeetingJoinRedisParams extends MeetingJoinParams {

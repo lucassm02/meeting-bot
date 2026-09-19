@@ -1,3 +1,4 @@
+import type { CaptionEntry } from '../lib/captions';
 import type { SpeakerTimelineData } from '../lib/speakerTimeline';
 import { Logger } from 'winston';
 import {
@@ -79,6 +80,7 @@ export interface IUploader {
   saveDataToTempFile(data: Buffer): Promise<boolean>;
   setRecordingDuration(durationSeconds: number): void;
   setSpeakerTimeline(data: SpeakerTimelineData): void;
+  setCaptions(captions: CaptionEntry[]): void;
 }
 
 // Save to disk and upload in one session
@@ -111,6 +113,7 @@ class DiskUploader implements IUploader {
   private lastStorageDetails?: Record<string, any>;
   private recordingDuration?: number;
   private speakerTimeline?: SpeakerTimelineData;
+  private captions?: CaptionEntry[];
   private firstChunkReceivedAt?: number;
 
   private queue: Buffer[];
@@ -388,6 +391,11 @@ class DiskUploader implements IUploader {
   /** Quem falou e quem participou, entregue em `metadata` do callback de conclusão. */
   public setSpeakerTimeline(data: SpeakerTimelineData): void {
     this.speakerTimeline = data;
+  }
+
+  /** Legendas nativas coletadas (recurso experimental), entregues em `metadata.captions`. */
+  public setCaptions(captions: CaptionEntry[]): void {
+    this.captions = captions;
   }
 
   public setRecordingDuration(durationSeconds: number): void {
@@ -900,6 +908,7 @@ class DiskUploader implements IUploader {
               storage: this.lastStorageDetails,
               speakerTimeline: this.speakerTimeline?.speakerTimeline ?? [],
               participants: this.speakerTimeline?.participants ?? [],
+              ...(this.captions ? { captions: this.captions } : {}),
             },
           };
           await notifyRecordingCompleted(payload, this._logger);

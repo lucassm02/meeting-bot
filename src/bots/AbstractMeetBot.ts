@@ -22,6 +22,8 @@ export interface JoinParams {
   botId?: string;
   eventId?: string;
   joinWaitMinutes?: number;
+  /** Liga e coleta as legendas nativas da plataforma (experimental). */
+  collectCaptions?: boolean;
   uploader: IUploader;
 }
 

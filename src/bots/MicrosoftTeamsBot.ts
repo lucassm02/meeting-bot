@@ -20,6 +20,8 @@ import { clearActiveRecording, registerActiveRecording } from '../lib/activeReco
 import { notifyMeetingIdle } from '../services/notificationService';
 import { startSpeakerTimelineCollector, type SpeakerTimelineCollector } from '../lib/speakerTimeline';
 import { TEAMS_SPEAKER_SELECTORS } from '../constants/speakerSelectors';
+import { TEAMS_CAPTION_SELECTORS } from '../constants/captionSelectors';
+import { startCaptionCollector, type CaptionCollector } from '../lib/captions';
 import * as path from 'path';
 import * as fs from 'fs';
 import { exec } from 'child_process';
@@ -30,13 +32,15 @@ const execAsync = promisify(exec);
 export class MicrosoftTeamsBot extends MeetBotBase {
   private _logger: Logger;
   private _correlationId: string;
+  private _collectCaptions = false;
   constructor(logger: Logger, correlationId: string) {
     super();
     this.slightlySecretId = v4();
     this._logger = logger;
     this._correlationId = correlationId;
   }
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, joinWaitMinutes, collectCaptions, uploader }: JoinParams): Promise<void> {
+    this._collectCaptions = collectCaptions === true;
     const _state: BotStatus[] = ['processing'];
 
     const handleUpload = async () => {
@@ -758,6 +762,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     let ffmpegError: Error | null = null;
     let recordingStartedAt: number | undefined;
     let speakerCollector: SpeakerTimelineCollector | undefined;
+    let captionCollector: CaptionCollector | undefined;
     // Hoisted out of the try block so the matching finally can set it to signal
     // the silence detector (declared inside the try) to stop on its next tick.
     let meetingEnded = false;
@@ -787,6 +792,21 @@ export class MicrosoftTeamsBot extends MeetBotBase {
         });
       } catch (err) {
         this._logger.warn('Speaker timeline collector not started', err);
+      }
+
+      // Legendas nativas (experimental): só com a flag ligada na API.
+      if (this._collectCaptions) {
+        try {
+          captionCollector = startCaptionCollector({
+            page: this.page,
+            startedAt,
+            selectors: TEAMS_CAPTION_SELECTORS,
+            logger: this._logger,
+            platform: 'teams',
+          });
+        } catch (err) {
+          this._logger.warn('Caption collector not started', err);
+        }
       }
 
       // Monitor FFmpeg process - if it dies, stop recording immediately
@@ -1201,6 +1221,13 @@ export class MicrosoftTeamsBot extends MeetBotBase {
           uploader.setSpeakerTimeline(speakerCollector.stop());
         } catch (err) {
           this._logger.warn('Speaker timeline not attached to the recording', err);
+        }
+      }
+      if (captionCollector) {
+        try {
+          uploader.setCaptions(captionCollector.stop());
+        } catch (err) {
+          this._logger.warn('Captions not attached to the recording', err);
         }
       }
 
